@@ -1,0 +1,30 @@
+# Rust build output
+/target/
+
+# Runtime database files (portable layout puts these next to the .exe)
+*.db
+*.db-wal
+*.db-shm
+*.db.pre-restore
+*.db.pending-restore
+
+# Backups directory created by the app at runtime
+backups/
+
+# Compiled binaries copied next to the repo for manual testing
+roche_crm.exe
+
+# Ad-hoc portable test folders
+/portable/
+/potrable2/
+/RocheCRM/
+
+# Ralph loop scratch state (the checklist itself is tracked)
+.ralph/*.state.json
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
