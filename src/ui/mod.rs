@@ -2,6 +2,7 @@ pub mod dashboard;
 pub mod members;
 pub mod merchandise;
 pub mod expenses;
+pub mod payment;
 pub mod settings;
 pub mod theme;
 pub mod transactions;
@@ -19,12 +20,21 @@ pub fn date_edit(ui: &mut egui::Ui, value: &mut String) {
     });
 }
 
-/// A `YYYY-MM` text field with a "This month" shortcut button beside it.
-pub fn month_edit(ui: &mut egui::Ui, value: &mut String) {
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(value).desired_width(90.0));
-        if ui.small_button("This month").clicked() {
-            *value = crate::core::dates::current_month();
-        }
-    });
+/// A month picker dropdown (`YYYY-MM`). Since billing is monthly, a dropdown of
+/// real months beats typing a date. `salt` must be unique per simultaneously
+/// rendered dropdown.
+pub fn month_dropdown(ui: &mut egui::Ui, salt: &str, value: &mut String) {
+    use crate::core::dates;
+    let mut opts = dates::month_options(24, 1);
+    // Keep an out-of-window value (e.g. editing an old payment) selectable.
+    if dates::is_valid_month(value) && !opts.iter().any(|m| m == value) {
+        opts.insert(0, value.clone());
+    }
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(dates::pretty_month(value))
+        .show_ui(ui, |ui| {
+            for m in &opts {
+                ui.selectable_value(value, m.clone(), dates::pretty_month(m));
+            }
+        });
 }

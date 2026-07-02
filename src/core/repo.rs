@@ -421,6 +421,62 @@ impl Repository {
         Ok((behind, behind as f64 * self.default_monthly_fee()))
     }
 
+    /// Every active member's outstanding membership-months as of `current_month`,
+    /// counted from each member's own join month. Only members who owe at least
+    /// one month are included, keyed by member id: (months behind, money owed).
+    /// One query for all payments, then per-member counting in Rust.
+    pub fn arrears_all(
+        &self,
+        current_month: &str,
+    ) -> rusqlite::Result<std::collections::HashMap<i64, (i64, f64)>> {
+        let mut paid: std::collections::HashMap<i64, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT member_id, period_month FROM payments
+             WHERE category != 'registration' AND period_month <= ?1",
+        )?;
+        for row in stmt.query_map([current_month], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (id, m) = row?;
+            paid.entry(id).or_default().push(m);
+        }
+        let fee = self.default_monthly_fee();
+        let mut out = std::collections::HashMap::new();
+        for m in self.list_members(true)? {
+            let join_month = &m.join_date[..7];
+            let paid_count = paid
+                .get(&m.id)
+                .map(|ms| ms.iter().filter(|pm| pm.as_str() >= join_month).count() as i64)
+                .unwrap_or(0);
+            let expected = super::dates::month_diff(join_month, current_month).max(0) + 1;
+            let behind = (expected - paid_count).max(0);
+            if behind > 0 {
+                out.insert(m.id, (behind, behind as f64 * fee));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Active members who owe at least one month as of `current_month`, each with
+    /// (months behind, money owed), most-behind first. Drives the Dashboard due list.
+    pub fn due_members_with_arrears(
+        &self,
+        current_month: &str,
+    ) -> rusqlite::Result<Vec<(Member, i64, f64)>> {
+        let arrears = self.arrears_all(current_month)?;
+        let mut out: Vec<(Member, i64, f64)> = self
+            .list_members(true)?
+            .into_iter()
+            .filter_map(|m| arrears.get(&m.id).map(|&(b, o)| (m, b, o)))
+            .collect();
+        out.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()))
+        });
+        Ok(out)
+    }
+
     /// Active members with no payment recorded for `month`.
     pub fn due_members(&self, month: &str) -> rusqlite::Result<Vec<Member>> {
         let mut stmt = self.conn.prepare(

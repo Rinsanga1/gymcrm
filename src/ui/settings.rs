@@ -82,7 +82,17 @@ impl SettingsState {
             ui.text_edit_singleline(&mut self.registration_fee);
             ui.end_row();
             ui.label("Currency");
-            ui.text_edit_singleline(&mut self.currency);
+            egui::ComboBox::from_id_salt("currency")
+                .selected_text(if self.currency.trim().is_empty() {
+                    "Select".to_string()
+                } else {
+                    self.currency.clone()
+                })
+                .show_ui(ui, |ui| {
+                    for c in ["Rs", "₹", "$", "€", "£"] {
+                        ui.selectable_value(&mut self.currency, c.to_string(), c);
+                    }
+                });
             ui.end_row();
         });
 

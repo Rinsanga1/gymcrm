@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32, FontId, RichText};
 
 use crate::core::dates;
 use crate::core::models::{Expense, Payment, Txn, TxnKind};
@@ -108,98 +108,147 @@ impl TransactionsState {
                 ui.label(RichText::new("No transactions yet.").weak());
             });
         } else {
+            let muted = crate::ui::theme::text_muted(ui.visuals());
+            let text_col = ui.visuals().text_color();
+            let hover_bg = ui.visuals().widgets.hovered.weak_bg_fill;
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.set_max_width(820.0);
+                        ui.set_max_width(860.0);
                         let spacing = ui.spacing().item_spacing.x;
-                        let avail = (ui.available_width() - 4.0).max(420.0);
-                        let date_w = 96.0;
-                        let amt_w = 110.0;
-                        let act_w = 132.0;
-                        let desc_w =
-                            (avail - date_w - amt_w - act_w - spacing * 3.0).max(150.0);
+                        let avail = (ui.available_width() - 4.0).max(440.0);
+                        let pad = 10.0;
+                        let date_w = 92.0;
+                        let amt_w = 120.0;
+                        let act_w = 100.0;
+                        let desc_w = (avail - date_w - amt_w - act_w - pad * 2.0 - spacing * 3.0)
+                            .max(150.0);
+
+                        // Column headers
+                        ui.horizontal(|ui| {
+                            ui.add_space(pad);
+                            ui.add_sized(
+                                [date_w, 14.0],
+                                egui::Label::new(RichText::new("Date").color(muted).size(11.0))
+                                    .halign(egui::Align::LEFT),
+                            );
+                            ui.add_sized(
+                                [desc_w, 14.0],
+                                egui::Label::new(
+                                    RichText::new("Description").color(muted).size(11.0),
+                                )
+                                .halign(egui::Align::LEFT),
+                            );
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(amt_w, 14.0),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(RichText::new("Amount").color(muted).size(11.0));
+                                },
+                            );
+                            ui.add_space(act_w);
+                        });
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.spacing_mut().item_spacing.y = 0.0;
 
                         for (gi, g) in self.groups.iter().enumerate() {
-                            ui.add_space(if gi == 0 { 2.0 } else { 20.0 });
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin::symmetric(8, 0))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(&g.label).strong().size(16.0));
-                                        ui.with_layout(
+                            ui.add_space(if gi == 0 { 10.0 } else { 22.0 });
+                            ui.horizontal(|ui| {
+                                ui.add_space(pad);
+                                ui.label(
+                                    RichText::new(g.label.to_uppercase())
+                                        .color(muted)
+                                        .size(11.0),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.add_space(act_w);
+                                        ui.label(amount_text(g.net, &currency).size(12.5));
+                                    },
+                                );
+                            });
+                            ui.add_space(6.0);
+
+                            for t in g.items.iter() {
+                                let row_h = if t.detail.is_some() { 46.0 } else { 34.0 };
+                                let full_w = ui.available_width();
+                                let row_rect = egui::Rect::from_min_size(
+                                    ui.next_widget_position(),
+                                    egui::vec2(full_w, row_h),
+                                );
+                                let hovered = ui.rect_contains_pointer(row_rect);
+                                if hovered {
+                                    ui.painter().rect_filled(row_rect, 6.0, hover_bg);
+                                }
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(full_w, row_h),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.add_space(pad);
+                                        ui.add_sized(
+                                            [date_w, row_h],
+                                            egui::Label::new(
+                                                RichText::new(&t.date).color(muted).size(12.5),
+                                            )
+                                            .halign(egui::Align::LEFT),
+                                        );
+                                        let mut job = egui::text::LayoutJob::default();
+                                        job.append(
+                                            &t.label,
+                                            0.0,
+                                            egui::TextFormat {
+                                                font_id: FontId::proportional(13.5),
+                                                color: text_col,
+                                                ..Default::default()
+                                            },
+                                        );
+                                        if let Some(d) = &t.detail {
+                                            job.append(
+                                                &format!("\n{d}"),
+                                                0.0,
+                                                egui::TextFormat {
+                                                    font_id: FontId::proportional(11.0),
+                                                    color: muted,
+                                                    ..Default::default()
+                                                },
+                                            );
+                                        }
+                                        job.wrap = egui::text::TextWrapping {
+                                            max_width: desc_w,
+                                            max_rows: if t.detail.is_some() { 2 } else { 1 },
+                                            break_anywhere: false,
+                                            overflow_character: Some('…'),
+                                        };
+                                        ui.add_sized([desc_w, row_h], egui::Label::new(job));
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(amt_w, row_h),
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
                                                 ui.label(
-                                                    amount_text(g.net, &currency)
-                                                        .strong()
-                                                        .size(14.0),
+                                                    amount_text(t.amount, &currency).size(13.5),
                                                 );
                                             },
                                         );
-                                    });
-                                });
-                            ui.add_space(2.0);
-                            ui.separator();
-
-                            for (ri, t) in g.items.iter().enumerate() {
-                                let bg = if ri % 2 == 1 {
-                                    ui.visuals().faint_bg_color
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                };
-                                egui::Frame::new()
-                                    .fill(bg)
-                                    .corner_radius(6.0)
-                                    .inner_margin(egui::Margin::symmetric(8, 7))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.set_min_height(30.0);
-                                            ui.add_sized(
-                                                [date_w, 28.0],
-                                                egui::Label::new(
-                                                    RichText::new(&t.date).weak(),
-                                                )
-                                                .halign(egui::Align::LEFT),
-                                            );
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(desc_w, 28.0),
-                                                egui::Layout::top_down(egui::Align::Min),
-                                                |ui| {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(&t.label).size(13.5),
-                                                        )
-                                                        .truncate(),
-                                                    );
-                                                    if let Some(d) = &t.detail {
-                                                        ui.add(
-                                                            egui::Label::new(
-                                                                RichText::new(d)
-                                                                    .weak()
-                                                                    .size(11.0),
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(act_w, row_h),
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.add_space(pad);
+                                                if hovered {
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                RichText::new("Delete")
+                                                                    .color(OUTGOING)
+                                                                    .size(12.0),
                                                             )
-                                                            .truncate(),
-                                                        );
-                                                    }
-                                                },
-                                            );
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(amt_w, 28.0),
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    ui.label(
-                                                        amount_text(t.amount, &currency)
-                                                            .size(13.5),
-                                                    );
-                                                },
-                                            );
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(act_w, 28.0),
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    if ui.small_button("Delete").clicked() {
+                                                            .frame(false),
+                                                        )
+                                                        .clicked()
+                                                    {
                                                         action = Some(Action::AskDelete(
                                                             t.kind,
                                                             t.id,
@@ -207,15 +256,24 @@ impl TransactionsState {
                                                         ));
                                                     }
                                                     if !matches!(t.kind, TxnKind::Sale)
-                                                        && ui.small_button("Edit").clicked()
+                                                        && ui
+                                                            .add(
+                                                                egui::Button::new(
+                                                                    RichText::new("Edit")
+                                                                        .size(12.0),
+                                                                )
+                                                                .frame(false),
+                                                            )
+                                                            .clicked()
                                                     {
                                                         action =
                                                             Some(Action::Edit(t.kind, t.id));
                                                     }
-                                                },
-                                            );
-                                        });
-                                    });
+                                                }
+                                            },
+                                        );
+                                    },
+                                );
                             }
                         }
                         ui.add_space(16.0);
@@ -279,7 +337,7 @@ impl TransactionsState {
                             ui.text_edit_singleline(&mut form.amount);
                             ui.end_row();
                             ui.label("Month");
-                            crate::ui::month_edit(ui, &mut form.month);
+                            crate::ui::month_dropdown(ui, "txn_edit_month", &mut form.month);
                             ui.end_row();
                             ui.label("Date");
                             crate::ui::date_edit(ui, &mut form.date);

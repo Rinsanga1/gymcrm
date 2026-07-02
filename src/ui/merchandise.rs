@@ -174,11 +174,16 @@ impl MerchandiseState {
 
     fn products_table(&self, ui: &mut egui::Ui) -> Option<Action> {
         if self.products.is_empty() {
+            let mut action = None;
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("No products yet.").weak());
+                ui.add_space(6.0);
+                if ui.button("+ Add your first product").clicked() {
+                    action = Some(Action::NewProduct);
+                }
             });
-            return None;
+            return action;
         }
         let mut action: Option<Action> = None;
         let row_height = 34.0;
@@ -246,11 +251,16 @@ impl MerchandiseState {
 
     fn sales_table(&self, ui: &mut egui::Ui) -> Option<Action> {
         if self.sales.is_empty() {
+            let mut action = None;
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("No sales recorded yet.").weak());
+                ui.add_space(6.0);
+                if ui.button("+ Record your first sale").clicked() {
+                    action = Some(Action::NewSale);
+                }
             });
-            return None;
+            return action;
         }
         let mut action: Option<Action> = None;
         let row_height = 34.0;

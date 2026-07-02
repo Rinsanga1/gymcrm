@@ -127,6 +127,47 @@ pub fn months_ago(n: u32) -> String {
     fmt(today_naive() - Months::new(n))
 }
 
+/// Inclusive `YYYY-MM` months from `from` to `to` (both `YYYY-MM`), oldest
+/// first. Empty if either is unparseable or `to` is before `from`.
+pub fn months_between(from: &str, to: &str) -> Vec<String> {
+    fn first_of(s: &str) -> Option<NaiveDate> {
+        let (y, m) = s.trim().split_once('-')?;
+        NaiveDate::from_ymd_opt(y.parse().ok()?, m.parse().ok()?, 1)
+    }
+    let (Some(a), Some(b)) = (first_of(from), first_of(to)) else {
+        return Vec::new();
+    };
+    if b < a {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut d = a;
+    while d <= b {
+        out.push(d.format("%Y-%m").to_string());
+        d = d + Months::new(1);
+    }
+    out
+}
+
+/// `YYYY-MM` months for a picker: `forward` months ahead down to `back` months
+/// behind the current month, newest first. The current month sits near the top
+/// so the common case is a short reach.
+pub fn month_options(back: u32, forward: u32) -> Vec<String> {
+    let today = today_naive();
+    let base = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
+    let mut out = Vec::with_capacity((back + forward + 1) as usize);
+    for i in 0..=(back + forward) {
+        let offset = forward as i64 - i as i64; // +forward .. -back
+        let d = if offset >= 0 {
+            base + Months::new(offset as u32)
+        } else {
+            base - Months::new((-offset) as u32)
+        };
+        out.push(d.format("%Y-%m").to_string());
+    }
+    out
+}
+
 /// True if `s` is a real calendar date in `YYYY-MM-DD` form.
 pub fn is_valid_date(s: &str) -> bool {
     NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").is_ok()

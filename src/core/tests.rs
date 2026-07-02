@@ -278,3 +278,45 @@ fn membership_arrears_counts_unpaid_months() {
     r.insert_payment(&payment(id, "2026-04", 1500.0)).unwrap();
     assert_eq!(r.membership_arrears(id, "2026-01", "2026-04").unwrap(), (0, 0.0));
 }
+
+#[test]
+fn due_is_computed_from_registration_not_just_current_month() {
+    // The change-B behaviour: a member who paid THIS month but skipped earlier
+    // months is still Due for the months they owe since joining.
+    let r = repo();
+    let ava = r.insert_member(&member("Ava", true)).unwrap(); // joined 2026-01
+    let ben = r.insert_member(&member("Ben", true)).unwrap(); // joined 2026-01
+    let cara = r.insert_member(&member("Cara", false)).unwrap(); // inactive
+
+    // Ben pays Jan..Mar in full; Ava pays only the current month (March).
+    for m in ["2026-01", "2026-02", "2026-03"] {
+        r.insert_payment(&payment(ben, m, 1500.0)).unwrap();
+    }
+    r.insert_payment(&payment(ava, "2026-03", 1500.0)).unwrap();
+
+    let arr = r.arrears_all("2026-03").unwrap();
+    // Ava owes Jan + Feb despite paying March.
+    assert_eq!(arr.get(&ava).copied(), Some((2, 3000.0)));
+    assert!(!arr.contains_key(&ben)); // fully paid
+    assert!(!arr.contains_key(&cara)); // inactive never counted
+
+    let due_ids: Vec<i64> = r
+        .due_members_with_arrears("2026-03")
+        .unwrap()
+        .iter()
+        .map(|(m, _, _)| m.id)
+        .collect();
+    assert_eq!(due_ids, vec![ava]);
+}
+
+#[test]
+fn months_between_is_inclusive_oldest_first() {
+    use crate::core::dates::months_between;
+    assert_eq!(
+        months_between("2026-06", "2026-08"),
+        vec!["2026-06", "2026-07", "2026-08"]
+    );
+    assert_eq!(months_between("2026-08", "2026-08"), vec!["2026-08"]);
+    assert!(months_between("2026-08", "2026-06").is_empty()); // end before start
+    assert!(months_between("bad", "2026-08").is_empty());
+}

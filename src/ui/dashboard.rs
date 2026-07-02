@@ -1,23 +1,14 @@
 use eframe::egui;
 
 use crate::core::dates::{self, Period};
-use crate::core::models::Payment;
 use crate::core::Repository;
-
-struct PaymentDialog {
-    member_id: i64,
-    member_name: String,
-    amount: String,
-    month: String,
-    error: Option<String>,
-}
 
 pub struct DashboardState {
     period: Period,
     custom_start: String,
     custom_end: String,
     due_search: String,
-    pay_dialog: Option<PaymentDialog>,
+    pay_dialog: Option<crate::ui::payment::PaymentForm>,
 }
 
 impl Default for DashboardState {
@@ -53,11 +44,32 @@ impl DashboardState {
 
         let total_members = repo.count_members(false).unwrap_or(0);
         let active_members = repo.count_members(true).unwrap_or(0);
-        let dues = repo.due_members(&dates::current_month()).unwrap_or_default();
+        // Due = owes any month since joining, most-behind first.
+        let dues = repo
+            .due_members_with_arrears(&dates::current_month())
+            .unwrap_or_default();
         let due_count = dues.len();
         let reg_due = repo.unpaid_registration_count(true).unwrap_or(0);
 
+        // The two numbers a gym owner opens the app to see.
         ui.add_space(8.0);
+        let net_color = if net >= 0.0 {
+            egui::Color32::from_rgb(40, 170, 90)
+        } else {
+            egui::Color32::from_rgb(200, 70, 70)
+        };
+        let due_color = if due_count > 0 {
+            egui::Color32::from_rgb(210, 120, 40)
+        } else {
+            egui::Color32::from_rgb(40, 170, 90)
+        };
+        ui.horizontal(|ui| {
+            hero(ui, "Net earnings", &format!("{} {:.2}", currency, net), net_color);
+            ui.add_space(10.0);
+            hero(ui, "Members due", &format!("{}", due_count), due_color);
+        });
+
+        ui.add_space(12.0);
         egui::Grid::new("kpis").num_columns(4).spacing([12.0, 12.0]).show(ui, |ui| {
             kpi(ui, "Total income", &format!("{} {:.2}", currency, total_income));
             kpi(ui, "Membership", &format!("{} {:.2}", currency, membership));
@@ -65,10 +77,7 @@ impl DashboardState {
             kpi(ui, "Merchandise", &format!("{} {:.2} ({} units)", currency, merch, merch_units));
             ui.end_row();
             kpi(ui, "Expenses", &format!("{} {:.2}", currency, expenses));
-            kpi(ui, "Net earnings", &format!("{} {:.2}", currency, net));
-            kpi(ui, "Pending dues", &format!("{}", due_count));
             kpi(ui, "Members (total)", &format!("{}", total_members));
-            ui.end_row();
             kpi(ui, "Active members", &format!("{}", active_members));
             kpi(ui, "Reg. fee due", &format!("{}", reg_due));
             ui.end_row();
@@ -94,11 +103,12 @@ impl DashboardState {
         self.revenue_chart(ui, repo, &start, &end);
 
         ui.add_space(8.0);
-        ui.heading(format!("Due this month ({})", due_count));
+        ui.heading(format!("Due ({})", due_count));
         if dues.is_empty() {
-            ui.label("No members currently due. ✓");
+            ui.label("No dues outstanding. ✓");
         } else {
             let fee = repo.default_monthly_fee();
+            let current_month = dates::current_month();
             ui.horizontal(|ui| {
                 ui.label("Search:");
                 ui.add(
@@ -111,10 +121,9 @@ impl DashboardState {
                 }
             });
             ui.add_space(4.0);
-            let current_month = dates::current_month();
             let q = self.due_search.trim().to_lowercase();
             let mut shown = 0usize;
-            for m in dues.iter().filter(|m| {
+            for (m, behind, owed) in dues.iter().filter(|(m, _, _)| {
                 q.is_empty()
                     || m.name.to_lowercase().contains(&q)
                     || m.phone
@@ -122,21 +131,18 @@ impl DashboardState {
                         .is_some_and(|p| p.to_lowercase().contains(&q))
             }) {
                 shown += 1;
-                let (behind, owed) = repo
-                    .membership_arrears(m.id, &m.join_date[..7], &current_month)
-                    .unwrap_or((1, fee));
+                let (behind, owed) = (*behind, *owed);
                 ui.horizontal(|ui| {
                     if ui
                         .add(egui::Button::new(format!("Record payment → {}", m.name)).small())
                         .clicked()
                     {
-                        self.pay_dialog = Some(PaymentDialog {
-                            member_id: m.id,
-                            member_name: m.name.clone(),
-                            amount: format!("{}", fee),
-                            month: current_month.clone(),
-                            error: None,
-                        });
+                        self.pay_dialog = Some(crate::ui::payment::PaymentForm::new(
+                            m.id,
+                            m.name.clone(),
+                            fee,
+                            current_month.clone(),
+                        ));
                     }
                     let unit = if behind == 1 { "month" } else { "months" };
                     let color = if behind >= 3 {
@@ -166,48 +172,16 @@ impl DashboardState {
 
     fn draw_payment_dialog(&mut self, ctx: &egui::Context, repo: &mut Repository) {
         let mut close = false;
-        if let Some(d) = &mut self.pay_dialog {
-            egui::Window::new(format!("Record payment — {}", d.member_name))
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    egui::Grid::new("pay_form").num_columns(2).show(ui, |ui| {
-                        ui.label("Month");
-                        crate::ui::month_edit(ui, &mut d.month);
-                        ui.end_row();
-                        ui.label("Amount");
-                        ui.text_edit_singleline(&mut d.amount);
-                        ui.end_row();
-                    });
-                    let valid =
-                        dates::is_valid_month(&d.month) && d.amount.parse::<f64>().is_ok();
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(valid, egui::Button::new("Save")).clicked() {
-                            let p = Payment {
-                                id: 0,
-                                member_id: d.member_id,
-                                period_month: d.month.trim().to_string(),
-                                amount: d.amount.parse().unwrap_or(0.0),
-                                date: dates::today(),
-                                note: None,
-                                category: "membership".to_string(),
-                            };
-                            match repo.insert_payment(&p) {
-                                Ok(_) => close = true,
-                                Err(e) => {
-                                    d.error = Some(format!("Couldn't save payment — {e}"))
-                                }
-                            }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
-                    if let Some(err) = &d.error {
-                        ui.add_space(4.0);
-                        ui.colored_label(egui::Color32::from_rgb(210, 90, 90), err);
-                    }
-                });
+        let currency = repo.currency();
+        if let Some(form) = &mut self.pay_dialog {
+            match crate::ui::payment::show(ctx, form, &currency) {
+                crate::ui::payment::Outcome::Save => match repo.insert_payment(&form.to_payment()) {
+                    Ok(_) => close = true,
+                    Err(e) => form.error = Some(format!("Couldn't save payment — {e}")),
+                },
+                crate::ui::payment::Outcome::Cancel => close = true,
+                crate::ui::payment::Outcome::Open => {}
+            }
         }
         if close {
             self.pay_dialog = None;
@@ -328,6 +302,27 @@ impl DashboardState {
             ui.weak(format!("{} day(s)", days.len()));
         });
     }
+}
+
+/// A large emphasis card for the one or two numbers that matter most.
+fn hero(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
+    use crate::ui::theme;
+    let card = theme::card_fill(ui.visuals());
+    let border = theme::border(ui.visuals());
+    let muted = theme::text_muted(ui.visuals());
+    egui::Frame::new()
+        .fill(card)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(20, 18))
+        .show(ui, |ui| {
+            ui.set_min_width(240.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(label.to_uppercase()).size(12.0).color(muted));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(value).size(34.0).strong().color(accent));
+            });
+        });
 }
 
 fn kpi(ui: &mut egui::Ui, label: &str, value: &str) {

@@ -92,6 +92,10 @@ impl ExpensesState {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("No expenses yet.").weak());
+                ui.add_space(6.0);
+                if ui.button("+ Add your first expense").clicked() {
+                    self.dialog = Dialog::Edit(ExpenseForm::new_expense());
+                }
             });
         } else {
         TableBuilder::new(ui)
