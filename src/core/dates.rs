@@ -10,9 +10,16 @@ pub fn today() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// `YYYY-MM` for the month containing `date`.
-pub fn month_of(date: NaiveDate) -> String {
-    format!("{:04}-{:02}", date.year(), date.month())
+/// `YYYY-MM` → e.g. `June 2026`. Falls back to the input if unparseable.
+pub fn pretty_month(ym: &str) -> String {
+    if let Some((y, m)) = ym.split_once('-') {
+        if let (Ok(y), Ok(m)) = (y.parse::<i32>(), m.parse::<u32>()) {
+            if let Some(d) = NaiveDate::from_ymd_opt(y, m, 1) {
+                return d.format("%B %Y").to_string();
+            }
+        }
+    }
+    ym.to_string()
 }
 
 fn today_naive() -> NaiveDate {
@@ -94,12 +101,45 @@ pub fn days_inclusive(start: &str, end: &str) -> Vec<NaiveDate> {
     let mut d = s;
     while d <= e {
         out.push(d);
-        d = d + Days::new(1);
+        match d.checked_add_days(Days::new(1)) {
+            Some(next) => d = next,
+            None => break, // hit NaiveDate::MAX
+        }
     }
     out
+}
+
+/// Whole months from `from` to `to`, both `YYYY-MM`. Same month = 0,
+/// later `to` = positive, earlier `to` = negative. Unparseable inputs = 0.
+pub fn month_diff(from: &str, to: &str) -> i64 {
+    fn parse(s: &str) -> Option<(i64, i64)> {
+        let (y, m) = s.trim().split_once('-')?;
+        Some((y.parse().ok()?, m.parse().ok()?))
+    }
+    match (parse(from), parse(to)) {
+        (Some((y1, m1)), Some((y2, m2))) => (y2 - y1) * 12 + (m2 - m1),
+        _ => 0,
+    }
 }
 
 /// Convenience: subtract n months from today, returning ISO string.
 pub fn months_ago(n: u32) -> String {
     fmt(today_naive() - Months::new(n))
+}
+
+/// True if `s` is a real calendar date in `YYYY-MM-DD` form.
+pub fn is_valid_date(s: &str) -> bool {
+    NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").is_ok()
+}
+
+/// True if `s` is a `YYYY-MM` month with a month in 01..=12.
+pub fn is_valid_month(s: &str) -> bool {
+    let s = s.trim();
+    let Some((y, m)) = s.split_once('-') else {
+        return false;
+    };
+    let (Ok(_), Ok(mm)) = (y.parse::<i32>(), m.parse::<u32>()) else {
+        return false;
+    };
+    y.len() == 4 && m.len() == 2 && (1..=12).contains(&mm)
 }

@@ -35,12 +35,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS members (
-            id          INTEGER PRIMARY KEY,
-            name        TEXT NOT NULL,
-            phone       TEXT,
-            join_date   TEXT NOT NULL,
-            active      INTEGER NOT NULL DEFAULT 1,
-            notes       TEXT
+            id                    INTEGER PRIMARY KEY,
+            name                  TEXT NOT NULL,
+            phone                 TEXT,
+            join_date             TEXT NOT NULL,
+            active                INTEGER NOT NULL DEFAULT 1,
+            notes                 TEXT,
+            registration_fee_paid INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_members_name  ON members(name);
         CREATE INDEX IF NOT EXISTS idx_members_phone ON members(phone);
@@ -51,7 +52,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             period_month TEXT NOT NULL,
             amount       REAL NOT NULL,
             date         TEXT NOT NULL,
-            note         TEXT
+            note         TEXT,
+            category     TEXT NOT NULL DEFAULT 'membership'
         );
         CREATE INDEX IF NOT EXISTS idx_payments_period ON payments(period_month);
         CREATE INDEX IF NOT EXISTS idx_payments_member ON payments(member_id);
@@ -81,6 +83,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE TABLE IF NOT EXISTS expenses (
             id     INTEGER PRIMARY KEY,
+            name   TEXT NOT NULL DEFAULT '',
             amount REAL NOT NULL,
             date   TEXT NOT NULL,
             note   TEXT
@@ -92,6 +95,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         );
         "#,
     )?;
+
+    add_missing_columns(conn)?;
 
     // Seed default settings if absent.
     conn.execute(
@@ -106,5 +111,47 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "INSERT OR IGNORE INTO settings(key, value) VALUES ('gym_name', 'My Gym')",
         [],
     )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES ('registration_fee', '500')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// True if `table` already has a column named `column`.
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get("name")?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Add columns introduced after the initial schema to databases created by an
+/// earlier version. `CREATE TABLE IF NOT EXISTS` never alters existing tables,
+/// so new columns must be patched in here.
+fn add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
+    if !has_column(conn, "members", "registration_fee_paid")? {
+        conn.execute(
+            "ALTER TABLE members ADD COLUMN registration_fee_paid INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !has_column(conn, "payments", "category")? {
+        conn.execute(
+            "ALTER TABLE payments ADD COLUMN category TEXT NOT NULL DEFAULT 'membership'",
+            [],
+        )?;
+    }
+    if !has_column(conn, "expenses", "name")? {
+        conn.execute(
+            "ALTER TABLE expenses ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
     Ok(())
 }

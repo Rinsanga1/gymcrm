@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, Row};
 
-use super::models::{Expense, Member, MemberStatus, Payment, Product, Sale, SaleItem};
+use super::models::{Expense, Member, Payment, Product, Sale, SaleItem, Txn, TxnKind};
 
 /// Thin data-access layer over the SQLite connection. UI-free and testable.
 pub struct Repository {
@@ -15,6 +15,7 @@ fn member_from_row(r: &Row) -> rusqlite::Result<Member> {
         join_date: r.get("join_date")?,
         active: r.get::<_, i64>("active")? != 0,
         notes: r.get("notes")?,
+        registration_fee_paid: r.get::<_, i64>("registration_fee_paid")? != 0,
     })
 }
 
@@ -26,6 +27,7 @@ fn payment_from_row(r: &Row) -> rusqlite::Result<Payment> {
         amount: r.get("amount")?,
         date: r.get("date")?,
         note: r.get("note")?,
+        category: r.get("category")?,
     })
 }
 
@@ -42,6 +44,7 @@ fn product_from_row(r: &Row) -> rusqlite::Result<Product> {
 fn expense_from_row(r: &Row) -> rusqlite::Result<Expense> {
     Ok(Expense {
         id: r.get("id")?,
+        name: r.get("name")?,
         amount: r.get("amount")?,
         date: r.get("date")?,
         note: r.get("note")?,
@@ -84,6 +87,24 @@ impl Repository {
             .unwrap_or(1500.0)
     }
 
+    pub fn registration_fee(&self) -> f64 {
+        self.get_setting("registration_fee")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(500.0)
+    }
+
+    /// Count of members still owing the one-time registration fee.
+    pub fn unpaid_registration_count(&self, active_only: bool) -> rusqlite::Result<i64> {
+        let sql = if active_only {
+            "SELECT COUNT(*) FROM members WHERE active=1 AND registration_fee_paid=0"
+        } else {
+            "SELECT COUNT(*) FROM members WHERE registration_fee_paid=0"
+        };
+        self.conn.query_row(sql, [], |r| r.get(0))
+    }
+
     /// Force a full WAL checkpoint so the main DB file contains all committed
     /// data — important before copying the file for a backup.
     pub fn checkpoint(&self) -> rusqlite::Result<()> {
@@ -102,18 +123,35 @@ impl Repository {
 
     pub fn insert_member(&self, m: &Member) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO members(name, phone, join_date, active, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![m.name, m.phone, m.join_date, m.active as i64, m.notes],
+            "INSERT INTO members(name, phone, join_date, active, notes,
+                                 registration_fee_paid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                m.name,
+                m.phone,
+                m.join_date,
+                m.active as i64,
+                m.notes,
+                m.registration_fee_paid as i64,
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
     pub fn update_member(&self, m: &Member) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE members SET name=?1, phone=?2, join_date=?3, active=?4, notes=?5
-             WHERE id=?6",
-            params![m.name, m.phone, m.join_date, m.active as i64, m.notes, m.id],
+            "UPDATE members SET name=?1, phone=?2, join_date=?3, active=?4, notes=?5,
+                                registration_fee_paid=?6
+             WHERE id=?7",
+            params![
+                m.name,
+                m.phone,
+                m.join_date,
+                m.active as i64,
+                m.notes,
+                m.registration_fee_paid as i64,
+                m.id,
+            ],
         )?;
         Ok(())
     }
@@ -181,11 +219,39 @@ impl Repository {
 
     pub fn insert_payment(&self, p: &Payment) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO payments(member_id, period_month, amount, date, note)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![p.member_id, p.period_month, p.amount, p.date, p.note],
+            "INSERT INTO payments(member_id, period_month, amount, date, note, category)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![p.member_id, p.period_month, p.amount, p.date, p.note, p.category],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Record the one-time registration fee as a payment, but only if this
+    /// member doesn't already have one (idempotent across re-saves).
+    pub fn ensure_registration_payment(
+        &self,
+        member_id: i64,
+        amount: f64,
+        date: &str,
+        month: &str,
+    ) -> rusqlite::Result<()> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM payments WHERE member_id=?1 AND category='registration'",
+            [member_id],
+            |r| r.get(0),
+        )?;
+        if n == 0 {
+            self.insert_payment(&Payment {
+                id: 0,
+                member_id,
+                period_month: month.to_string(),
+                amount,
+                date: date.to_string(),
+                note: None,
+                category: "registration".to_string(),
+            })?;
+        }
+        Ok(())
     }
 
     pub fn update_payment(&self, p: &Payment) -> rusqlite::Result<()> {
@@ -201,6 +267,103 @@ impl Repository {
         Ok(())
     }
 
+    pub fn get_payment(&self, id: i64) -> rusqlite::Result<Option<Payment>> {
+        self.conn
+            .query_row("SELECT * FROM payments WHERE id=?1", [id], payment_from_row)
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+    }
+
+    /// Every money movement (payments, sales, expenses) newest-first, for the
+    /// Transactions history view. Expense amounts are negated (money out).
+    pub fn list_transactions(&self) -> rusqlite::Result<Vec<Txn>> {
+        let mut out: Vec<Txn> = Vec::new();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.date, p.amount, p.category, p.note, m.name
+             FROM payments p LEFT JOIN members m ON m.id = p.member_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, date, amount, category, note, name) = row?;
+            let cat = match category.as_str() {
+                "registration" => "Registration",
+                _ => "Membership",
+            };
+            let label = match &name {
+                Some(n) => format!("{cat} · {n}"),
+                None => cat.to_string(),
+            };
+            out.push(Txn {
+                kind: TxnKind::Payment,
+                id,
+                date,
+                amount,
+                label,
+                detail: note,
+            });
+        }
+
+        let mut stmt = self.conn.prepare("SELECT id, date, total FROM sales")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+        })?;
+        for row in rows {
+            let (id, date, total) = row?;
+            out.push(Txn {
+                kind: TxnKind::Sale,
+                id,
+                date,
+                amount: total,
+                label: "Merchandise sale".to_string(),
+                detail: None,
+            });
+        }
+
+        let mut stmt =
+            self.conn.prepare("SELECT id, date, amount, note, name FROM expenses")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, date, amount, note, name) = row?;
+            let label = if name.trim().is_empty() {
+                "Expense".to_string()
+            } else {
+                name
+            };
+            out.push(Txn {
+                kind: TxnKind::Expense,
+                id,
+                date,
+                amount: -amount,
+                label,
+                detail: note,
+            });
+        }
+
+        out.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
+        Ok(out)
+    }
+
     pub fn payments_for_member(&self, member_id: i64) -> rusqlite::Result<Vec<Payment>> {
         let mut stmt = self
             .conn
@@ -212,7 +375,8 @@ impl Repository {
     /// True if the member has at least one payment recorded for `month` (YYYY-MM).
     pub fn is_paid(&self, member_id: i64, month: &str) -> rusqlite::Result<bool> {
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM payments WHERE member_id=?1 AND period_month=?2",
+            "SELECT COUNT(*) FROM payments
+             WHERE member_id=?1 AND period_month=?2 AND category != 'registration'",
             params![member_id, month],
             |r| r.get(0),
         )?;
@@ -224,7 +388,10 @@ impl Repository {
     pub fn paid_member_ids(&self, month: &str) -> rusqlite::Result<std::collections::HashSet<i64>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT member_id FROM payments WHERE period_month=?1")?;
+            .prepare(
+                "SELECT DISTINCT member_id FROM payments
+                 WHERE period_month=?1 AND category != 'registration'",
+            )?;
         let rows = stmt.query_map([month], |r| r.get::<_, i64>(0))?;
         let mut set = std::collections::HashSet::new();
         for id in rows {
@@ -233,35 +400,52 @@ impl Repository {
         Ok(set)
     }
 
+    /// How many membership-months the member is behind as of `current_month`,
+    /// counting from their `join_month` (both `YYYY-MM`), and the money that
+    /// represents at the current monthly fee. Registration payments don't count.
+    pub fn membership_arrears(
+        &self,
+        member_id: i64,
+        join_month: &str,
+        current_month: &str,
+    ) -> rusqlite::Result<(i64, f64)> {
+        let paid: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT period_month) FROM payments
+             WHERE member_id=?1 AND category != 'registration'
+               AND period_month >= ?2 AND period_month <= ?3",
+            params![member_id, join_month, current_month],
+            |r| r.get(0),
+        )?;
+        let expected = super::dates::month_diff(join_month, current_month).max(0) + 1;
+        let behind = (expected - paid).max(0);
+        Ok((behind, behind as f64 * self.default_monthly_fee()))
+    }
+
     /// Active members with no payment recorded for `month`.
     pub fn due_members(&self, month: &str) -> rusqlite::Result<Vec<Member>> {
         let mut stmt = self.conn.prepare(
             "SELECT * FROM members
              WHERE active=1
-               AND id NOT IN (SELECT member_id FROM payments WHERE period_month=?1)
+               AND id NOT IN (SELECT member_id FROM payments
+                              WHERE period_month=?1 AND category != 'registration')
              ORDER BY name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([month], member_from_row)?;
         rows.collect()
     }
 
-    pub fn member_status(&self, m: &Member, month: &str) -> rusqlite::Result<MemberStatus> {
-        if !m.active {
-            return Ok(MemberStatus::Inactive);
-        }
-        Ok(if self.is_paid(m.id, month)? {
-            MemberStatus::Paid
-        } else {
-            MemberStatus::Due
-        })
-    }
-
-    /// Sum of membership payments whose `date` falls in [start, end] (inclusive,
-    /// ISO date strings).
-    pub fn membership_income(&self, start: &str, end: &str) -> rusqlite::Result<f64> {
+    /// Sum of payments of one `category` ('membership'|'registration')
+    /// whose `date` falls in [start, end] (inclusive ISO date strings).
+    pub fn category_income(
+        &self,
+        category: &str,
+        start: &str,
+        end: &str,
+    ) -> rusqlite::Result<f64> {
         let v: f64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(amount),0) FROM payments WHERE date >= ?1 AND date <= ?2",
-            params![start, end],
+            "SELECT COALESCE(SUM(amount),0) FROM payments
+             WHERE category=?1 AND date >= ?2 AND date <= ?3",
+            params![category, start, end],
             |r| r.get(0),
         )?;
         Ok(v)
@@ -491,16 +675,16 @@ impl Repository {
 
     pub fn insert_expense(&self, e: &Expense) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO expenses(amount, date, note) VALUES (?1, ?2, ?3)",
-            params![e.amount, e.date, e.note],
+            "INSERT INTO expenses(name, amount, date, note) VALUES (?1, ?2, ?3, ?4)",
+            params![e.name, e.amount, e.date, e.note],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
     pub fn update_expense(&self, e: &Expense) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE expenses SET amount=?1, date=?2, note=?3 WHERE id=?4",
-            params![e.amount, e.date, e.note, e.id],
+            "UPDATE expenses SET name=?1, amount=?2, date=?3, note=?4 WHERE id=?5",
+            params![e.name, e.amount, e.date, e.note, e.id],
         )?;
         Ok(())
     }
@@ -508,6 +692,16 @@ impl Repository {
     pub fn delete_expense(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM expenses WHERE id=?1", [id])?;
         Ok(())
+    }
+
+    pub fn get_expense(&self, id: i64) -> rusqlite::Result<Option<Expense>> {
+        self.conn
+            .query_row("SELECT * FROM expenses WHERE id=?1", [id], expense_from_row)
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
     }
 
     pub fn list_expenses(&self) -> rusqlite::Result<Vec<Expense>> {

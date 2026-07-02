@@ -8,6 +8,7 @@ use crate::core::Repository;
 #[derive(Default)]
 struct ExpenseForm {
     id: i64,
+    name: String,
     amount: String,
     date: String,
     note: String,
@@ -26,6 +27,7 @@ impl ExpenseForm {
     fn from(e: &Expense) -> Self {
         Self {
             id: e.id,
+            name: e.name.clone(),
             amount: format!("{}", e.amount),
             date: e.date.clone(),
             note: e.note.clone().unwrap_or_default(),
@@ -86,16 +88,26 @@ impl ExpensesState {
         ui.separator();
 
         let mut action: Option<Action> = None;
+        if self.rows.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No expenses yet.").weak());
+            });
+        } else {
         TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
+            .striped(false)
+            .resizable(false)
             .column(Column::auto().at_least(120.0))
+            .column(Column::auto().at_least(160.0))
             .column(Column::auto().at_least(100.0))
             .column(Column::remainder().at_least(200.0))
             .column(Column::auto().at_least(140.0))
-            .header(22.0, |mut h| {
+            .header(30.0, |mut h| {
                 h.col(|ui| {
                     ui.strong("Date");
+                });
+                h.col(|ui| {
+                    ui.strong("Name");
                 });
                 h.col(|ui| {
                     ui.strong("Amount");
@@ -108,10 +120,13 @@ impl ExpensesState {
                 });
             })
             .body(|body| {
-                body.rows(26.0, self.rows.len(), |mut row| {
+                body.rows(34.0, self.rows.len(), |mut row| {
                     let e = &self.rows[row.index()];
                     row.col(|ui| {
                         ui.label(&e.date);
+                    });
+                    row.col(|ui| {
+                        ui.label(&e.name);
                     });
                     row.col(|ui| {
                         ui.label(format!("{:.2}", e.amount));
@@ -131,6 +146,7 @@ impl ExpensesState {
                     });
                 });
             });
+        }
 
         if let Some(a) = action {
             match a {
@@ -158,8 +174,11 @@ impl ExpensesState {
                     .resizable(false)
                     .show(ctx, |ui| {
                         egui::Grid::new("exp_form").num_columns(2).show(ui, |ui| {
+                            ui.label("Name");
+                            ui.text_edit_singleline(&mut form.name);
+                            ui.end_row();
                             ui.label("Date");
-                            ui.text_edit_singleline(&mut form.date);
+                            crate::ui::date_edit(ui, &mut form.date);
                             ui.end_row();
                             ui.label("Amount");
                             ui.text_edit_singleline(&mut form.amount);
@@ -168,12 +187,14 @@ impl ExpensesState {
                             ui.text_edit_multiline(&mut form.note);
                             ui.end_row();
                         });
-                        let valid = !form.date.trim().is_empty()
+                        let valid = !form.name.trim().is_empty()
+                            && !form.date.trim().is_empty()
                             && form.amount.parse::<f64>().is_ok();
                         ui.horizontal(|ui| {
                             if ui.add_enabled(valid, egui::Button::new("Save")).clicked() {
                                 let e = Expense {
                                     id: form.id,
+                                    name: form.name.trim().to_string(),
                                     amount: form.amount.parse().unwrap_or(0.0),
                                     date: form.date.trim().to_string(),
                                     note: if form.note.trim().is_empty() {

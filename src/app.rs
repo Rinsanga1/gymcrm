@@ -8,15 +8,17 @@ pub enum View {
     Members,
     Merchandise,
     Expenses,
+    Transactions,
     Settings,
 }
 
 impl View {
-    const ALL: [View; 5] = [
+    const ALL: [View; 6] = [
         View::Dashboard,
         View::Members,
         View::Merchandise,
         View::Expenses,
+        View::Transactions,
         View::Settings,
     ];
 
@@ -26,6 +28,7 @@ impl View {
             View::Members => "Members",
             View::Merchandise => "Merchandise",
             View::Expenses => "Expenses",
+            View::Transactions => "Transactions",
             View::Settings => "Settings",
         }
     }
@@ -38,14 +41,13 @@ pub struct App {
     members: crate::ui::members::MembersState,
     merchandise: crate::ui::merchandise::MerchandiseState,
     expenses: crate::ui::expenses::ExpensesState,
+    transactions: crate::ui::transactions::TransactionsState,
     dashboard: crate::ui::dashboard::DashboardState,
     settings: crate::ui::settings::SettingsState,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-
         let path = db::db_path();
 
         // Apply a pending restore (queued from a previous run's Settings dialog).
@@ -66,6 +68,11 @@ impl App {
             .flatten()
             .unwrap_or_else(|| "RocheCRM".to_string());
 
+        let mode = crate::ui::theme::Mode::from_str(
+            &repo.get_setting("theme").ok().flatten().unwrap_or_default(),
+        );
+        crate::ui::theme::apply(&cc.egui_ctx, mode);
+
         Self {
             repo,
             view: View::Dashboard,
@@ -73,35 +80,66 @@ impl App {
             members: crate::ui::members::MembersState::default(),
             merchandise: crate::ui::merchandise::MerchandiseState::default(),
             expenses: crate::ui::expenses::ExpensesState::default(),
+            transactions: crate::ui::transactions::TransactionsState::default(),
             dashboard: crate::ui::dashboard::DashboardState::default(),
             settings: crate::ui::settings::SettingsState::default(),
         }
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(12.0);
-        ui.heading("RocheCRM");
-        ui.label(egui::RichText::new(&self.gym_name).weak());
+        use crate::ui::theme;
+        let muted = theme::text_muted(ui.visuals());
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("RocheCRM").size(16.0).strong());
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&self.gym_name).size(12.0).color(muted));
+        });
         ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(8.0);
 
         for v in View::ALL {
             let selected = self.view == v;
-            if ui
-                .selectable_label(selected, egui::RichText::new(v.label()).size(16.0))
-                .clicked()
-            {
+            if nav_item(ui, v.label(), selected).clicked() {
                 self.view = v;
                 // Re-query the DB on every navigation so changes made in
                 // other views (e.g. CSV import in Settings) are visible.
                 self.members.invalidate();
                 self.merchandise.invalidate();
                 self.expenses.invalidate();
+                self.transactions.invalidate();
             }
-            ui.add_space(4.0);
+            ui.add_space(2.0);
         }
     }
+}
+
+/// A full-width sidebar navigation row with a selection highlight.
+fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    use crate::ui::theme;
+    let desired = egui::vec2(ui.available_width(), 32.0);
+    let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+    let text_color = ui.visuals().text_color();
+    let muted = theme::text_muted(ui.visuals());
+    let (bg, fg) = if selected {
+        (theme::nav_selected_fill(ui.ctx()), text_color)
+    } else if resp.hovered() {
+        (theme::nav_hover_fill(ui.ctx()), text_color)
+    } else {
+        (egui::Color32::TRANSPARENT, muted)
+    };
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, egui::CornerRadius::same(7), bg);
+    painter.text(
+        rect.left_center() + egui::vec2(12.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(13.5),
+        fg,
+    );
+    resp
 }
 
 impl eframe::App for App {
@@ -116,7 +154,17 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::left("sidebar")
             .resizable(false)
-            .exact_size(200.0)
+            .exact_size(210.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::ui::theme::sidebar_fill(ui.ctx()))
+                    .inner_margin(egui::Margin {
+                        left: 10,
+                        right: 10,
+                        top: 0,
+                        bottom: 8,
+                    }),
+            )
             .show_inside(ui, |ui| {
                 self.sidebar(ui);
             });
@@ -125,6 +173,7 @@ impl eframe::App for App {
         let members = &mut self.members;
         let merchandise = &mut self.merchandise;
         let expenses = &mut self.expenses;
+        let transactions = &mut self.transactions;
         let dashboard = &mut self.dashboard;
         let settings = &mut self.settings;
         let view = self.view;
@@ -133,6 +182,7 @@ impl eframe::App for App {
             View::Members => members.show(ui, repo),
             View::Merchandise => merchandise.show(ui, repo),
             View::Expenses => expenses.show(ui, repo),
+            View::Transactions => transactions.show(ui, repo),
             View::Settings => settings.show(ui, repo),
         });
     }

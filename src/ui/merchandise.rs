@@ -173,17 +173,24 @@ impl MerchandiseState {
     }
 
     fn products_table(&self, ui: &mut egui::Ui) -> Option<Action> {
+        if self.products.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No products yet.").weak());
+            });
+            return None;
+        }
         let mut action: Option<Action> = None;
-        let row_height = 26.0;
+        let row_height = 34.0;
         TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
+            .striped(false)
+            .resizable(false)
             .column(Column::auto().at_least(180.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::remainder().at_least(180.0))
-            .header(22.0, |mut h| {
+            .header(30.0, |mut h| {
                 h.col(|ui| {
                     ui.strong("Name");
                 });
@@ -238,15 +245,22 @@ impl MerchandiseState {
     }
 
     fn sales_table(&self, ui: &mut egui::Ui) -> Option<Action> {
+        if self.sales.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No sales recorded yet.").weak());
+            });
+            return None;
+        }
         let mut action: Option<Action> = None;
-        let row_height = 26.0;
+        let row_height = 34.0;
         TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
+            .striped(false)
+            .resizable(false)
             .column(Column::auto().at_least(120.0))
             .column(Column::auto().at_least(120.0))
             .column(Column::remainder().at_least(180.0))
-            .header(22.0, |mut h| {
+            .header(30.0, |mut h| {
                 h.col(|ui| {
                     ui.strong("Date");
                 });
@@ -403,7 +417,7 @@ impl MerchandiseState {
                     .show(ctx, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Date");
-                            ui.text_edit_singleline(&mut form.date);
+                            crate::ui::date_edit(ui, &mut form.date);
                         });
                         ui.separator();
                         let mut remove_idx: Option<usize> = None;

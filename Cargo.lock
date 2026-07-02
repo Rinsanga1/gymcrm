@@ -2879,7 +2879,6 @@ dependencies = [
  "egui_extras",
  "rfd",
  "rusqlite",
- "serde",
 ]
 
 [[package]]

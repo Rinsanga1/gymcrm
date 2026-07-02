@@ -9,6 +9,7 @@ use crate::core::{backup, dates, db, Repository};
 pub struct SettingsState {
     gym_name: String,
     monthly_fee: String,
+    registration_fee: String,
     currency: String,
     loaded: bool,
     status: Option<String>,
@@ -22,6 +23,7 @@ impl Default for SettingsState {
         Self {
             gym_name: String::new(),
             monthly_fee: String::new(),
+            registration_fee: String::new(),
             currency: String::new(),
             loaded: false,
             status: None,
@@ -40,6 +42,7 @@ impl SettingsState {
             .flatten()
             .unwrap_or_else(|| "RocheCRM".into());
         self.monthly_fee = format!("{}", repo.default_monthly_fee());
+        self.registration_fee = format!("{}", repo.registration_fee());
         self.currency = repo.currency();
         self.loaded = true;
     }
@@ -49,8 +52,24 @@ impl SettingsState {
             self.load(repo);
         }
 
+        egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         ui.heading("Settings");
         ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Theme");
+            let current = crate::ui::theme::Mode::from_str(
+                &repo.get_setting("theme").ok().flatten().unwrap_or_default(),
+            );
+            let mut selected = current;
+            ui.selectable_value(&mut selected, crate::ui::theme::Mode::Light, "Light");
+            ui.selectable_value(&mut selected, crate::ui::theme::Mode::Dark, "Dark");
+            if selected != current {
+                let _ = repo.set_setting("theme", selected.as_str());
+                crate::ui::theme::apply(ui.ctx(), selected);
+            }
+        });
+        ui.add_space(8.0);
 
         egui::Grid::new("settings_form").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
             ui.label("Gym name");
@@ -58,6 +77,9 @@ impl SettingsState {
             ui.end_row();
             ui.label("Default monthly fee");
             ui.text_edit_singleline(&mut self.monthly_fee);
+            ui.end_row();
+            ui.label("Registration fee");
+            ui.text_edit_singleline(&mut self.registration_fee);
             ui.end_row();
             ui.label("Currency");
             ui.text_edit_singleline(&mut self.currency);
@@ -67,10 +89,12 @@ impl SettingsState {
         ui.horizontal(|ui| {
             let valid = !self.gym_name.trim().is_empty()
                 && self.monthly_fee.parse::<f64>().is_ok()
+                && self.registration_fee.parse::<f64>().is_ok()
                 && !self.currency.trim().is_empty();
             if ui.add_enabled(valid, egui::Button::new("Save settings")).clicked() {
                 let _ = repo.set_setting("gym_name", self.gym_name.trim());
                 let _ = repo.set_setting("default_monthly_fee", self.monthly_fee.trim());
+                let _ = repo.set_setting("registration_fee", self.registration_fee.trim());
                 let _ = repo.set_setting("currency", self.currency.trim());
                 self.status = Some("Saved.".into());
             }
@@ -164,16 +188,15 @@ impl SettingsState {
             ui.weak("No backups yet.");
         } else {
             ui.weak(format!("{} backup file(s), newest first:", list.len()));
-            egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-                for p in &list {
-                    ui.label(p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
-                }
-            });
+            for p in &list {
+                ui.label(p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            }
         }
         if let Some(s) = &self.backup_summary {
             ui.add_space(4.0);
             ui.label(s);
         }
+        });
     }
 }
 
@@ -286,10 +309,11 @@ fn export_expenses(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> 
     let rows = repo.list_expenses().map_err(io_err)?;
     write_csv(
         path,
-        &["id", "date", "amount", "note"],
+        &["id", "name", "date", "amount", "note"],
         rows.into_iter().map(|e| {
             vec![
                 e.id.to_string(),
+                e.name,
                 e.date,
                 format!("{}", e.amount),
                 e.note.unwrap_or_default(),
@@ -358,6 +382,7 @@ fn import_members_csv(repo: &mut Repository, path: &PathBuf) -> String {
             join_date: today.clone(),
             active: true,
             notes: None,
+            registration_fee_paid: false,
         };
         let r = tx.execute(
             "INSERT INTO members(name, phone, join_date, active, notes)

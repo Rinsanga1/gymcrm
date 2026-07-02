@@ -1,6 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone)]
 pub struct Member {
     pub id: i64,
     pub name: String,
@@ -8,6 +6,7 @@ pub struct Member {
     pub join_date: String,
     pub active: bool,
     pub notes: Option<String>,
+    pub registration_fee_paid: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,17 +16,7 @@ pub enum MemberStatus {
     Inactive,
 }
 
-impl MemberStatus {
-    pub fn label(self) -> &'static str {
-        match self {
-            MemberStatus::Paid => "Paid",
-            MemberStatus::Due => "Due",
-            MemberStatus::Inactive => "Inactive",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone)]
 pub struct Payment {
     pub id: i64,
     pub member_id: i64,
@@ -36,9 +25,11 @@ pub struct Payment {
     pub amount: f64,
     pub date: String,
     pub note: Option<String>,
+    /// `membership` | `trial` | `registration`
+    pub category: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone)]
 pub struct Product {
     pub id: i64,
     pub name: String,
@@ -47,14 +38,14 @@ pub struct Product {
     pub active: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone)]
 pub struct Sale {
     pub id: i64,
     pub date: String,
     pub total: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone)]
 pub struct SaleItem {
     pub id: i64,
     pub sale_id: i64,
@@ -63,10 +54,30 @@ pub struct SaleItem {
     pub unit_price: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone)]
 pub struct Expense {
     pub id: i64,
+    pub name: String,
     pub amount: f64,
     pub date: String,
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxnKind {
+    Payment,
+    Sale,
+    Expense,
+}
+
+/// A unified money movement for the Transactions history view.
+#[derive(Debug, Clone)]
+pub struct Txn {
+    pub kind: TxnKind,
+    pub id: i64,
+    pub date: String,
+    /// Positive = money in, negative = money out.
+    pub amount: f64,
+    pub label: String,
+    pub detail: Option<String>,
 }
