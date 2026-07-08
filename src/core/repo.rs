@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, Row};
 
+use super::dates;
 use super::models::{Expense, Member, Payment, Product, Sale, SaleItem, Txn, TxnKind};
 
 /// Thin data-access layer over the SQLite connection. UI-free and testable.
@@ -15,7 +16,6 @@ fn member_from_row(r: &Row) -> rusqlite::Result<Member> {
         join_date: r.get("join_date")?,
         active: r.get::<_, i64>("active")? != 0,
         notes: r.get("notes")?,
-        registration_fee_paid: r.get::<_, i64>("registration_fee_paid")? != 0,
     })
 }
 
@@ -95,14 +95,47 @@ impl Repository {
             .unwrap_or(500.0)
     }
 
-    /// Count of members still owing the one-time registration fee.
+    /// Count of members still owing the one-time registration fee — i.e. with no
+    /// payment of category `registration` on record.
     pub fn unpaid_registration_count(&self, active_only: bool) -> rusqlite::Result<i64> {
         let sql = if active_only {
-            "SELECT COUNT(*) FROM members WHERE active=1 AND registration_fee_paid=0"
+            "SELECT COUNT(*) FROM members m WHERE m.active=1
+             AND NOT EXISTS (SELECT 1 FROM payments p
+                             WHERE p.member_id=m.id AND p.category='registration')"
         } else {
-            "SELECT COUNT(*) FROM members WHERE registration_fee_paid=0"
+            "SELECT COUNT(*) FROM members m
+             WHERE NOT EXISTS (SELECT 1 FROM payments p
+                               WHERE p.member_id=m.id AND p.category='registration')"
         };
         self.conn.query_row(sql, [], |r| r.get(0))
+    }
+
+    /// True if the member has recorded their one-time registration payment.
+    pub fn has_registration_payment(&self, member_id: i64) -> rusqlite::Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM payments WHERE member_id=?1 AND category='registration'",
+            [member_id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Members who still owe the one-time registration fee, name-sorted.
+    pub fn members_missing_registration(&self, active_only: bool) -> rusqlite::Result<Vec<Member>> {
+        let sql = if active_only {
+            "SELECT * FROM members m WHERE m.active=1
+             AND NOT EXISTS (SELECT 1 FROM payments p
+                             WHERE p.member_id=m.id AND p.category='registration')
+             ORDER BY m.name COLLATE NOCASE"
+        } else {
+            "SELECT * FROM members m
+             WHERE NOT EXISTS (SELECT 1 FROM payments p
+                               WHERE p.member_id=m.id AND p.category='registration')
+             ORDER BY m.name COLLATE NOCASE"
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([], member_from_row)?;
+        rows.collect()
     }
 
     /// Force a full WAL checkpoint so the main DB file contains all committed
@@ -123,16 +156,14 @@ impl Repository {
 
     pub fn insert_member(&self, m: &Member) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO members(name, phone, join_date, active, notes,
-                                 registration_fee_paid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO members(name, phone, join_date, active, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 m.name,
                 m.phone,
                 m.join_date,
                 m.active as i64,
                 m.notes,
-                m.registration_fee_paid as i64,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -140,16 +171,14 @@ impl Repository {
 
     pub fn update_member(&self, m: &Member) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE members SET name=?1, phone=?2, join_date=?3, active=?4, notes=?5,
-                                registration_fee_paid=?6
-             WHERE id=?7",
+            "UPDATE members SET name=?1, phone=?2, join_date=?3, active=?4, notes=?5
+             WHERE id=?6",
             params![
                 m.name,
                 m.phone,
                 m.join_date,
                 m.active as i64,
                 m.notes,
-                m.registration_fee_paid as i64,
                 m.id,
             ],
         )?;
@@ -219,9 +248,17 @@ impl Repository {
 
     pub fn insert_payment(&self, p: &Payment) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO payments(member_id, period_month, amount, date, note, category)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![p.member_id, p.period_month, p.amount, p.date, p.note, p.category],
+            "INSERT INTO payments(member_id, period_month, amount, date, note, category, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                p.member_id,
+                p.period_month,
+                p.amount,
+                p.date,
+                p.note,
+                p.category,
+                dates::now()
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -254,6 +291,16 @@ impl Repository {
         Ok(())
     }
 
+    /// Reverse of `ensure_registration_payment`: drop the member's registration
+    /// payment so un-collecting the joining fee also removes its transaction.
+    pub fn remove_registration_payment(&self, member_id: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM payments WHERE member_id=?1 AND category='registration'",
+            [member_id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_payment(&self, p: &Payment) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE payments SET period_month=?1, amount=?2, date=?3, note=?4 WHERE id=?5",
@@ -280,11 +327,15 @@ impl Repository {
     /// Every money movement (payments, sales, expenses) newest-first, for the
     /// Transactions history view. Expense amounts are negated (money out).
     pub fn list_transactions(&self) -> rusqlite::Result<Vec<Txn>> {
-        let mut out: Vec<Txn> = Vec::new();
+        // Each entry is (created_at, Txn); created_at breaks same-day ties so
+        // rows across the three sources order by when they were recorded.
+        let mut out: Vec<(String, Txn)> = Vec::new();
 
         let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.date, p.amount, p.category, p.note, m.name
-             FROM payments p LEFT JOIN members m ON m.id = p.member_id",
+            "SELECT p.id, p.date, p.amount, p.category, p.note, m.name,
+                    COALESCE(p.created_at, p.date)
+             FROM payments p LEFT JOIN members m ON m.id = p.member_id
+             WHERE p.amount <> 0",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -294,10 +345,11 @@ impl Repository {
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?;
         for row in rows {
-            let (id, date, amount, category, note, name) = row?;
+            let (id, date, amount, category, note, name, created_at) = row?;
             let cat = match category.as_str() {
                 "registration" => "Registration",
                 _ => "Membership",
@@ -306,34 +358,54 @@ impl Repository {
                 Some(n) => format!("{cat} · {n}"),
                 None => cat.to_string(),
             };
-            out.push(Txn {
-                kind: TxnKind::Payment,
-                id,
-                date,
-                amount,
-                label,
-                detail: note,
-            });
+            out.push((
+                created_at,
+                Txn {
+                    kind: TxnKind::Payment,
+                    id,
+                    date,
+                    amount,
+                    label,
+                    detail: note,
+                },
+            ));
         }
 
-        let mut stmt = self.conn.prepare("SELECT id, date, total FROM sales")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.date, s.total, COALESCE(s.created_at, s.date),
+                    group_concat(si.qty || '× ' || COALESCE(p.name, '(removed)'), ' · ')
+             FROM sales s
+             LEFT JOIN sale_items si ON si.sale_id = s.id
+             LEFT JOIN products p ON p.id = si.product_id
+             GROUP BY s.id, s.date, s.total, s.created_at",
+        )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
         })?;
         for row in rows {
-            let (id, date, total) = row?;
-            out.push(Txn {
-                kind: TxnKind::Sale,
-                id,
-                date,
-                amount: total,
-                label: "Merchandise sale".to_string(),
-                detail: None,
-            });
+            let (id, date, total, created_at, items) = row?;
+            out.push((
+                created_at,
+                Txn {
+                    kind: TxnKind::Sale,
+                    id,
+                    date,
+                    amount: total,
+                    label: "Merchandise sale".to_string(),
+                    detail: items.filter(|s| !s.trim().is_empty()),
+                },
+            ));
         }
 
-        let mut stmt =
-            self.conn.prepare("SELECT id, date, amount, note, name FROM expenses")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, amount, note, name, COALESCE(created_at, date) FROM expenses",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -341,27 +413,36 @@ impl Repository {
                 r.get::<_, f64>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
             ))
         })?;
         for row in rows {
-            let (id, date, amount, note, name) = row?;
+            let (id, date, amount, note, name, created_at) = row?;
             let label = if name.trim().is_empty() {
                 "Expense".to_string()
             } else {
                 name
             };
-            out.push(Txn {
-                kind: TxnKind::Expense,
-                id,
-                date,
-                amount: -amount,
-                label,
-                detail: note,
-            });
+            out.push((
+                created_at,
+                Txn {
+                    kind: TxnKind::Expense,
+                    id,
+                    date,
+                    amount: -amount,
+                    label,
+                    detail: note,
+                },
+            ));
         }
 
-        out.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
-        Ok(out)
+        out.sort_by(|a, b| {
+            b.1.date
+                .cmp(&a.1.date)
+                .then(b.0.cmp(&a.0))
+                .then(b.1.id.cmp(&a.1.id))
+        });
+        Ok(out.into_iter().map(|(_, t)| t).collect())
     }
 
     pub fn payments_for_member(&self, member_id: i64) -> rusqlite::Result<Vec<Payment>> {
@@ -557,8 +638,8 @@ impl Repository {
         let total: f64 = items.iter().map(|(_, q, p)| *q as f64 * *p).sum();
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO sales(date, total) VALUES (?1, ?2)",
-            params![date, total],
+            "INSERT INTO sales(date, total, created_at) VALUES (?1, ?2, ?3)",
+            params![date, total, dates::now()],
         )?;
         let sale_id = tx.last_insert_rowid();
         for (product_id, qty, unit_price) in items {
@@ -576,11 +657,51 @@ impl Repository {
         Ok(sale_id)
     }
 
+    /// Insert a sale exactly as given (CSV import). Unlike `record_sale`, this
+    /// preserves the recorded total and does NOT adjust product stock, since
+    /// imported product ids may not exist in this database.
+    pub fn import_sale(
+        &mut self,
+        date: &str,
+        total: f64,
+        items: &[(Option<i64>, i64, f64)], // (product_id, qty, unit_price)
+    ) -> rusqlite::Result<i64> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO sales(date, total, created_at) VALUES (?1, ?2, ?3)",
+            params![date, total, dates::now()],
+        )?;
+        let sale_id = tx.last_insert_rowid();
+        for (product_id, qty, unit_price) in items {
+            tx.execute(
+                "INSERT INTO sale_items(sale_id, product_id, qty, unit_price)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![sale_id, product_id, qty, unit_price],
+            )?;
+        }
+        tx.commit()?;
+        Ok(sale_id)
+    }
+
     pub fn list_sales(&self) -> rusqlite::Result<Vec<Sale>> {
         let mut stmt = self
             .conn
             .prepare("SELECT * FROM sales ORDER BY date DESC, id DESC")?;
         let rows = stmt.query_map([], |r| {
+            Ok(Sale {
+                id: r.get("id")?,
+                date: r.get("date")?,
+                total: r.get("total")?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_sales_between(&self, start: &str, end: &str) -> rusqlite::Result<Vec<Sale>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM sales WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
             Ok(Sale {
                 id: r.get("id")?,
                 date: r.get("date")?,
@@ -731,8 +852,8 @@ impl Repository {
 
     pub fn insert_expense(&self, e: &Expense) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO expenses(name, amount, date, note) VALUES (?1, ?2, ?3, ?4)",
-            params![e.name, e.amount, e.date, e.note],
+            "INSERT INTO expenses(name, amount, date, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![e.name, e.amount, e.date, e.note, dates::now()],
         )?;
         Ok(self.conn.last_insert_rowid())
     }

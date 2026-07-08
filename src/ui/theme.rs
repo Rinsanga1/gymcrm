@@ -3,16 +3,22 @@ use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, Text
 /// Linear-inspired accent (indigo). Used for focus / selection highlight only.
 pub const ACCENT: Color32 = Color32::from_rgb(94, 106, 210);
 
+/// Roche Fitness Gym brand bronze, lifted from the logo and warmed for contrast.
+pub const BRONZE: Color32 = Color32::from_rgb(200, 144, 78);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Light,
     Dark,
+    Gray,
 }
 
 impl Mode {
     pub fn from_str(s: &str) -> Mode {
         if s.eq_ignore_ascii_case("light") {
             Mode::Light
+        } else if s.eq_ignore_ascii_case("gray") {
+            Mode::Gray
         } else {
             Mode::Dark
         }
@@ -21,6 +27,7 @@ impl Mode {
         match self {
             Mode::Light => "light",
             Mode::Dark => "dark",
+            Mode::Gray => "gray",
         }
     }
 }
@@ -39,6 +46,7 @@ struct Palette {
     btn_hover: Color32,
     btn_active: Color32,
     nav_selected: Color32,
+    accent: Color32,
 }
 
 fn light() -> Palette {
@@ -56,6 +64,7 @@ fn light() -> Palette {
         btn_hover: Color32::from_rgb(236, 236, 239),
         btn_active: Color32::from_rgb(228, 228, 232),
         nav_selected: Color32::from_rgb(236, 236, 239),
+        accent: ACCENT,
     }
 }
 
@@ -74,6 +83,26 @@ fn dark() -> Palette {
         btn_hover: Color32::from_rgb(38, 38, 44),
         btn_active: Color32::from_rgb(46, 46, 52),
         nav_selected: Color32::from_rgb(36, 36, 42),
+        accent: ACCENT,
+    }
+}
+
+fn gray() -> Palette {
+    Palette {
+        dark_mode: true,
+        main: Color32::from_rgb(43, 46, 51),
+        sidebar: Color32::from_rgb(38, 40, 45),
+        card: Color32::from_rgb(48, 51, 56),
+        faint: Color32::from_rgb(41, 44, 49),
+        border: Color32::from_rgb(60, 64, 70),
+        border_strong: Color32::from_rgb(74, 78, 85),
+        text: Color32::from_rgb(228, 225, 220),
+        text_muted: Color32::from_rgb(154, 160, 168),
+        btn: Color32::from_rgb(54, 58, 64),
+        btn_hover: Color32::from_rgb(64, 68, 75),
+        btn_active: Color32::from_rgb(73, 78, 86),
+        nav_selected: Color32::from_rgb(62, 67, 74),
+        accent: BRONZE,
     }
 }
 
@@ -82,6 +111,7 @@ pub fn apply(ctx: &egui::Context, mode: Mode) {
     let p = match mode {
         Mode::Light => light(),
         Mode::Dark => dark(),
+        Mode::Gray => gray(),
     };
     let mut style = (*ctx.global_style()).clone();
 
@@ -116,12 +146,12 @@ pub fn apply(ctx: &egui::Context, mode: Mode) {
     v.window_stroke = Stroke::new(1.0, p.border);
     v.window_corner_radius = CornerRadius::same(12);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.hyperlink_color = ACCENT;
+    v.hyperlink_color = p.accent;
     v.warn_fg_color = Color32::from_rgb(200, 130, 50);
     v.error_fg_color = Color32::from_rgb(210, 90, 90);
 
-    v.selection.bg_fill = ACCENT.gamma_multiply(if p.dark_mode { 0.45 } else { 0.22 });
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.selection.bg_fill = p.accent.gamma_multiply(if p.dark_mode { 0.45 } else { 0.22 });
+    v.selection.stroke = Stroke::new(1.0, p.accent);
 
     let r = CornerRadius::same(7);
     let w = &mut v.widgets;
@@ -163,22 +193,30 @@ pub fn apply(ctx: &egui::Context, mode: Mode) {
     let theme = if p.dark_mode { egui::Theme::Dark } else { egui::Theme::Light };
     ctx.set_theme(theme);
     ctx.set_global_style(style);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("theme_mode"), mode));
 }
 
-fn is_dark(ctx: &egui::Context) -> bool {
-    ctx.global_style().visuals.dark_mode
+fn current_palette(ctx: &egui::Context) -> Palette {
+    let mode = ctx
+        .data(|d| d.get_temp::<Mode>(egui::Id::new("theme_mode")))
+        .unwrap_or(Mode::Dark);
+    match mode {
+        Mode::Light => light(),
+        Mode::Dark => dark(),
+        Mode::Gray => gray(),
+    }
 }
 
 pub fn sidebar_fill(ctx: &egui::Context) -> Color32 {
-    if is_dark(ctx) { dark().sidebar } else { light().sidebar }
+    current_palette(ctx).sidebar
 }
 
 pub fn nav_selected_fill(ctx: &egui::Context) -> Color32 {
-    if is_dark(ctx) { dark().nav_selected } else { light().nav_selected }
+    current_palette(ctx).nav_selected
 }
 
 pub fn nav_hover_fill(ctx: &egui::Context) -> Color32 {
-    if is_dark(ctx) { dark().btn_hover } else { light().btn_hover }
+    current_palette(ctx).btn_hover
 }
 
 /// Muted secondary text for the current visuals.

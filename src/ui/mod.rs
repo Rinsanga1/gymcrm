@@ -2,7 +2,6 @@ pub mod dashboard;
 pub mod members;
 pub mod merchandise;
 pub mod expenses;
-pub mod payment;
 pub mod settings;
 pub mod theme;
 pub mod transactions;

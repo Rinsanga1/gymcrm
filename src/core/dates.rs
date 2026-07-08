@@ -10,6 +10,12 @@ pub fn today() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// Current local timestamp as `YYYY-MM-DD HH:MM:SS`, used to order same-day
+/// transactions by the moment they were recorded.
+pub fn now() -> String {
+    Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 /// `YYYY-MM` → e.g. `June 2026`. Falls back to the input if unparseable.
 pub fn pretty_month(ym: &str) -> String {
     if let Some((y, m)) = ym.split_once('-') {

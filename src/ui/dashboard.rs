@@ -7,8 +7,6 @@ pub struct DashboardState {
     period: Period,
     custom_start: String,
     custom_end: String,
-    due_search: String,
-    pay_dialog: Option<crate::ui::payment::PaymentForm>,
 }
 
 impl Default for DashboardState {
@@ -17,8 +15,6 @@ impl Default for DashboardState {
             period: Period::ThisMonth,
             custom_start: dates::months_ago(1),
             custom_end: dates::today(),
-            due_search: String::new(),
-            pay_dialog: None,
         }
     }
 }
@@ -49,7 +45,6 @@ impl DashboardState {
             .due_members_with_arrears(&dates::current_month())
             .unwrap_or_default();
         let due_count = dues.len();
-        let reg_due = repo.unpaid_registration_count(true).unwrap_or(0);
 
         // The two numbers a gym owner opens the app to see.
         ui.add_space(8.0);
@@ -79,7 +74,6 @@ impl DashboardState {
             kpi(ui, "Expenses", &format!("{} {:.2}", currency, expenses));
             kpi(ui, "Members (total)", &format!("{}", total_members));
             kpi(ui, "Active members", &format!("{}", active_members));
-            kpi(ui, "Reg. fee due", &format!("{}", reg_due));
             ui.end_row();
         });
 
@@ -103,89 +97,41 @@ impl DashboardState {
         self.revenue_chart(ui, repo, &start, &end);
 
         ui.add_space(8.0);
-        ui.heading(format!("Due ({})", due_count));
-        if dues.is_empty() {
-            ui.label("No dues outstanding. ✓");
+        ui.heading("Recent activity");
+        let recent = repo.list_transactions().unwrap_or_default();
+        if recent.is_empty() {
+            ui.label("No transactions yet.");
         } else {
-            let fee = repo.default_monthly_fee();
-            let current_month = dates::current_month();
-            ui.horizontal(|ui| {
-                ui.label("Search:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.due_search)
-                        .hint_text("name or phone")
-                        .desired_width(220.0),
-                );
-                if !self.due_search.trim().is_empty() && ui.button("Clear").clicked() {
-                    self.due_search.clear();
-                }
-            });
-            ui.add_space(4.0);
-            let q = self.due_search.trim().to_lowercase();
-            let mut shown = 0usize;
-            for (m, behind, owed) in dues.iter().filter(|(m, _, _)| {
-                q.is_empty()
-                    || m.name.to_lowercase().contains(&q)
-                    || m.phone
-                        .as_deref()
-                        .is_some_and(|p| p.to_lowercase().contains(&q))
-            }) {
-                shown += 1;
-                let (behind, owed) = (*behind, *owed);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(egui::Button::new(format!("Record payment → {}", m.name)).small())
-                        .clicked()
-                    {
-                        self.pay_dialog = Some(crate::ui::payment::PaymentForm::new(
-                            m.id,
-                            m.name.clone(),
-                            fee,
-                            current_month.clone(),
-                        ));
-                    }
-                    let unit = if behind == 1 { "month" } else { "months" };
-                    let color = if behind >= 3 {
-                        egui::Color32::from_rgb(200, 70, 70)
-                    } else if behind == 2 {
-                        egui::Color32::from_rgb(210, 120, 40)
-                    } else {
-                        egui::Color32::from_rgb(200, 150, 60)
-                    };
-                    ui.colored_label(
-                        color,
-                        format!("{behind} {unit} · {currency} {owed:.0}"),
-                    );
-                    if let Some(p) = &m.phone {
-                        ui.weak(p);
+            egui::Grid::new("recent_txns")
+                .num_columns(3)
+                .spacing([16.0, 6.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for t in recent.iter().take(10) {
+                        ui.label(egui::RichText::new(&t.date).weak());
+                        ui.label(&t.label);
+                        let income = t.amount >= 0.0;
+                        let color = if income {
+                            egui::Color32::from_rgb(45, 170, 95)
+                        } else {
+                            egui::Color32::from_rgb(210, 90, 90)
+                        };
+                        let sign = if income { "+" } else { "-" };
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.colored_label(
+                                    color,
+                                    format!("{sign}{currency} {:.0}", t.amount.abs()),
+                                );
+                            },
+                        );
+                        ui.end_row();
                     }
                 });
-            }
-            if shown == 0 {
-                ui.weak("No members match your search.");
-            }
         }
+
         });
-
-        self.draw_payment_dialog(ui.ctx(), repo);
-    }
-
-    fn draw_payment_dialog(&mut self, ctx: &egui::Context, repo: &mut Repository) {
-        let mut close = false;
-        let currency = repo.currency();
-        if let Some(form) = &mut self.pay_dialog {
-            match crate::ui::payment::show(ctx, form, &currency) {
-                crate::ui::payment::Outcome::Save => match repo.insert_payment(&form.to_payment()) {
-                    Ok(_) => close = true,
-                    Err(e) => form.error = Some(format!("Couldn't save payment — {e}")),
-                },
-                crate::ui::payment::Outcome::Cancel => close = true,
-                crate::ui::payment::Outcome::Open => {}
-            }
-        }
-        if close {
-            self.pay_dialog = None;
-        }
     }
 
     fn period_chips(&mut self, ui: &mut egui::Ui) {

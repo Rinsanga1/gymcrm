@@ -14,7 +14,6 @@ fn member(name: &str, active: bool) -> Member {
         join_date: "2026-01-01".into(),
         active,
         notes: None,
-        registration_fee_paid: false,
     }
 }
 
@@ -62,24 +61,67 @@ fn seeded_settings_defaults() {
 }
 
 #[test]
-fn member_flags_round_trip_and_registration_count() {
+fn registration_derived_from_payment_not_flag() {
     let r = repo();
-    let mut paid = member("Nia", true);
-    paid.registration_fee_paid = true;
-    let pid = r.insert_member(&paid).unwrap();
-    let unpaid_id = r.insert_member(&member("Omar", true)).unwrap();
+    let pid = r.insert_member(&member("Nia", true)).unwrap();
+    let omar_id = r.insert_member(&member("Omar", true)).unwrap();
 
-    let loaded = r.get_member(pid).unwrap().unwrap();
-    assert!(loaded.registration_fee_paid);
+    // Nia has paid her one-time registration fee; Omar has not.
+    r.ensure_registration_payment(pid, 500.0, "2026-01-15", "2026-01").unwrap();
+
+    assert!(r.has_registration_payment(pid).unwrap());
+    assert!(!r.has_registration_payment(omar_id).unwrap());
 
     // Only Omar still owes the registration fee.
     assert_eq!(r.unpaid_registration_count(true).unwrap(), 1);
+    let missing: Vec<i64> = r
+        .members_missing_registration(true)
+        .unwrap()
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(missing, vec![omar_id]);
 
-    // Clearing it via update is reflected in the count.
-    let mut omar = r.get_member(unpaid_id).unwrap().unwrap();
-    omar.registration_fee_paid = true;
-    r.update_member(&omar).unwrap();
+    // Recording Omar's registration payment clears the count.
+    r.ensure_registration_payment(omar_id, 500.0, "2026-02-15", "2026-02").unwrap();
     assert_eq!(r.unpaid_registration_count(true).unwrap(), 0);
+    assert!(r.members_missing_registration(true).unwrap().is_empty());
+}
+
+#[test]
+fn removing_registration_deletes_its_transaction() {
+    // Un-collecting the joining fee must also drop it from the money ledger,
+    // not leave an orphan transaction behind.
+    let r = repo();
+    let id = r.insert_member(&member("Rhea", true)).unwrap();
+
+    r.ensure_registration_payment(id, 500.0, "2026-03-15", "2026-03")
+        .unwrap();
+    assert!(r.has_registration_payment(id).unwrap());
+    let before = r.list_transactions().unwrap().len();
+
+    r.remove_registration_payment(id).unwrap();
+    assert!(!r.has_registration_payment(id).unwrap());
+    assert_eq!(r.list_transactions().unwrap().len(), before - 1);
+    assert!(r.payments_for_member(id).unwrap().is_empty());
+}
+
+#[test]
+fn covered_month_is_paid_but_not_income_or_transaction() {
+    // A "Covered" month (prepaid or comped) is stored as a zero-amount
+    // membership payment: it settles the month without adding money or a
+    // money-ledger entry.
+    let r = repo();
+    let id = r.insert_member(&member("Sana", true)).unwrap();
+    r.insert_payment(&payment(id, "2026-08", 0.0)).unwrap();
+
+    assert!(r.is_paid(id, "2026-08").unwrap());
+    assert_eq!(
+        r.category_income("membership", "2026-08-01", "2026-08-31")
+            .unwrap(),
+        0.0
+    );
+    assert!(r.list_transactions().unwrap().iter().all(|t| t.amount != 0.0));
 }
 
 #[test]

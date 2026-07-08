@@ -1,9 +1,20 @@
+use std::collections::HashMap;
+
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::core::dates;
+use crate::core::dates::{self, Period};
 use crate::core::models::{Product, Sale};
 use crate::core::Repository;
+
+const SALE_PERIODS: [Period; 6] = [
+    Period::AllTime,
+    Period::Today,
+    Period::ThisWeek,
+    Period::ThisMonth,
+    Period::ThisQuarter,
+    Period::ThisYear,
+];
 
 const LOW_STOCK_THRESHOLD: i64 = 5;
 
@@ -71,16 +82,11 @@ enum Dialog {
     ConfirmDeleteSale { id: i64 },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Products,
-    Sales,
-}
-
 pub struct MerchandiseState {
-    tab: Tab,
     products: Vec<Product>,
     sales: Vec<Sale>,
+    sale_summaries: HashMap<i64, String>,
+    period: Period,
     dirty: bool,
     dialog: Dialog,
 }
@@ -88,9 +94,10 @@ pub struct MerchandiseState {
 impl Default for MerchandiseState {
     fn default() -> Self {
         Self {
-            tab: Tab::Products,
             products: Vec::new(),
             sales: Vec::new(),
+            sale_summaries: HashMap::new(),
+            period: Period::ThisMonth,
             dirty: true,
             dialog: Dialog::None,
         }
@@ -113,8 +120,32 @@ impl MerchandiseState {
 
     fn reload(&mut self, repo: &Repository) {
         self.products = repo.list_products().unwrap_or_default();
-        self.sales = repo.list_sales().unwrap_or_default();
+        let (start, end) = self.period.range();
+        self.sales = repo.list_sales_between(&start, &end).unwrap_or_default();
+        self.sale_summaries = self
+            .sales
+            .iter()
+            .map(|s| (s.id, self.summarize_sale(repo, s.id)))
+            .collect();
         self.dirty = false;
+    }
+
+    /// One-line "2× Water · 1× Protein" summary, built once per reload so rows
+    /// don't hit the DB every frame.
+    fn summarize_sale(&self, repo: &Repository, sale_id: i64) -> String {
+        repo.sale_items(sale_id)
+            .unwrap_or_default()
+            .iter()
+            .map(|it| {
+                let name = it
+                    .product_id
+                    .and_then(|pid| self.products.iter().find(|p| p.id == pid))
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("(removed)");
+                format!("{}× {}", it.qty, name)
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, repo: &mut Repository) {
@@ -122,48 +153,63 @@ impl MerchandiseState {
             self.reload(repo);
         }
 
+        let mut action: Option<Action> = None;
+
         ui.horizontal(|ui| {
             ui.heading("Merchandise");
-            ui.add_space(12.0);
-            ui.selectable_value(&mut self.tab, Tab::Products, "Products");
-            ui.selectable_value(&mut self.tab, Tab::Sales, "Sales");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("+ Record sale").clicked() {
+                    action = Some(Action::NewSale);
+                }
+                if ui.button("+ Add product").clicked() {
+                    action = Some(Action::NewProduct);
+                }
+            });
         });
         ui.separator();
 
-        let mut action: Option<Action> = None;
-
-        match self.tab {
-            Tab::Products => {
-                ui.horizontal(|ui| {
-                    if ui.button("+ Add product").clicked() {
-                        action = Some(Action::NewProduct);
-                    }
-                    let low = self
-                        .products
-                        .iter()
-                        .filter(|p| p.active && p.stock <= LOW_STOCK_THRESHOLD)
-                        .count();
-                    if low > 0 {
-                        ui.add_space(12.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(220, 140, 40),
-                            format!("{} product(s) low on stock (≤ {})", low, LOW_STOCK_THRESHOLD),
-                        );
-                    }
-                });
-                ui.add_space(6.0);
-                action = self.products_table(ui).or(action);
-            }
-            Tab::Sales => {
-                ui.horizontal(|ui| {
-                    if ui.button("+ Record sale").clicked() {
-                        action = Some(Action::NewSale);
-                    }
-                });
-                ui.add_space(6.0);
-                action = self.sales_table(ui).or(action);
-            }
+        let low = self
+            .products
+            .iter()
+            .filter(|p| p.active && p.stock <= LOW_STOCK_THRESHOLD)
+            .count();
+        if low > 0 {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 140, 40),
+                format!("{} product(s) low on stock (≤ {})", low, LOW_STOCK_THRESHOLD),
+            );
         }
+
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Products").strong());
+        ui.add_space(4.0);
+        action = ui
+            .push_id("merch_products", |ui| self.products_table(ui))
+            .inner
+            .or(action);
+
+        ui.add_space(18.0);
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Recent sales").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak("Full history lives in Transactions.");
+            });
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for p in SALE_PERIODS {
+                if ui.selectable_label(self.period == p, p.label()).clicked() {
+                    self.period = p;
+                    self.dirty = true;
+                }
+            }
+        });
+        ui.add_space(4.0);
+        action = ui
+            .push_id("merch_sales", |ui| self.sales_table(ui))
+            .inner
+            .or(action);
 
         if let Some(a) = action {
             self.handle_action(a, repo);
@@ -190,6 +236,7 @@ impl MerchandiseState {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
+            .max_scroll_height(row_height * 8.0)
             .column(Column::auto().at_least(180.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(80.0))
@@ -254,9 +301,9 @@ impl MerchandiseState {
             let mut action = None;
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("No sales recorded yet.").weak());
+                ui.label(egui::RichText::new("No sales in this period.").weak());
                 ui.add_space(6.0);
-                if ui.button("+ Record your first sale").clicked() {
+                if ui.button("+ Record a sale").clicked() {
                     action = Some(Action::NewSale);
                 }
             });
@@ -267,12 +314,17 @@ impl MerchandiseState {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
+            .max_scroll_height(row_height * 8.0)
             .column(Column::auto().at_least(120.0))
+            .column(Column::auto().at_least(200.0).clip(true))
             .column(Column::auto().at_least(120.0))
             .column(Column::remainder().at_least(180.0))
             .header(30.0, |mut h| {
                 h.col(|ui| {
                     ui.strong("Date");
+                });
+                h.col(|ui| {
+                    ui.strong("Items");
                 });
                 h.col(|ui| {
                     ui.strong("Total");
@@ -286,6 +338,15 @@ impl MerchandiseState {
                     let s = &self.sales[row.index()];
                     row.col(|ui| {
                         ui.label(&s.date);
+                    });
+                    row.col(|ui| {
+                        let summary = self
+                            .sale_summaries
+                            .get(&s.id)
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        ui.label(egui::RichText::new(summary).weak())
+                            .on_hover_text(summary);
                     });
                     row.col(|ui| {
                         ui.label(format!("{:.2}", s.total));

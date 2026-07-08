@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::core::models::Member;
+use crate::core::models::{Expense, Member, Payment};
 use crate::core::{backup, dates, db, Repository};
 
 pub struct SettingsState {
@@ -54,6 +54,8 @@ impl SettingsState {
 
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         ui.heading("Settings");
+        ui.add_space(6.0);
+        ui.heading("Preferences");
         ui.separator();
 
         ui.horizontal(|ui| {
@@ -64,6 +66,7 @@ impl SettingsState {
             let mut selected = current;
             ui.selectable_value(&mut selected, crate::ui::theme::Mode::Light, "Light");
             ui.selectable_value(&mut selected, crate::ui::theme::Mode::Dark, "Dark");
+            ui.selectable_value(&mut selected, crate::ui::theme::Mode::Gray, "Gray");
             if selected != current {
                 let _ = repo.set_setting("theme", selected.as_str());
                 crate::ui::theme::apply(ui.ctx(), selected);
@@ -113,26 +116,40 @@ impl SettingsState {
             }
         });
 
-        ui.add_space(16.0);
+        ui.add_space(20.0);
+        ui.heading("Data");
         ui.separator();
-        ui.heading("Import members from CSV");
-        ui.weak("Expected columns: Name, Phone (header row required). Other columns are ignored.");
-        if ui.button("Pick CSV file…").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("CSV", &["csv"])
-                .pick_file()
-            {
-                self.import_summary = Some(import_members_csv(repo, &path));
+        ui.label(egui::RichText::new("Import CSV").strong());
+        ui.weak("Round-trips with the exports below. Header row required; unknown columns ignored.");
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Import members…").clicked() {
+                if let Some(path) = pick_csv() {
+                    self.import_summary = Some(import_members_csv(repo, &path));
+                }
             }
-        }
+            if ui.button("Import payments…").clicked() {
+                if let Some(path) = pick_csv() {
+                    self.import_summary = Some(import_payments_csv(repo, &path));
+                }
+            }
+            if ui.button("Import sales…").clicked() {
+                if let Some(path) = pick_csv() {
+                    self.import_summary = Some(import_sales_csv(repo, &path));
+                }
+            }
+            if ui.button("Import expenses…").clicked() {
+                if let Some(path) = pick_csv() {
+                    self.import_summary = Some(import_expenses_csv(repo, &path));
+                }
+            }
+        });
         if let Some(s) = &self.import_summary {
             ui.add_space(4.0);
             ui.label(s);
         }
 
         ui.add_space(16.0);
-        ui.separator();
-        ui.heading("Export CSV");
+        ui.label(egui::RichText::new("Export CSV").strong());
         ui.horizontal_wrapped(|ui| {
             if ui.button("Export members").clicked() {
                 self.export_summary = Some(pick_and_export("members.csv", |p| {
@@ -161,8 +178,7 @@ impl SettingsState {
         }
 
         ui.add_space(16.0);
-        ui.separator();
-        ui.heading("Backups");
+        ui.label(egui::RichText::new("Backups & restore").strong());
         let db_path = db::db_path();
         ui.weak(format!(
             "Stored in: {}",
@@ -270,13 +286,14 @@ fn export_payments(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> 
                 p.period_month,
                 format!("{}", p.amount),
                 p.date,
+                p.category,
                 p.note.unwrap_or_default(),
             ]);
         }
     }
     write_csv(
         path,
-        &["id", "member_id", "member_name", "period_month", "amount", "date", "note"],
+        &["id", "member_id", "member_name", "period_month", "amount", "date", "category", "note"],
         all,
     )
 }
@@ -336,6 +353,231 @@ fn io_err(e: rusqlite::Error) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
 }
 
+fn pick_csv() -> Option<PathBuf> {
+    rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_file()
+}
+
+/// Parse a CSV into (headers, rows), skipping malformed rows. Shared by the
+/// importers so each only maps its own columns.
+fn read_csv(path: &PathBuf) -> Result<(csv::StringRecord, Vec<csv::StringRecord>), String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open file: {e}"))?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(file);
+    let headers = rdr
+        .headers()
+        .map_err(|e| format!("Failed to read header: {e}"))?
+        .clone();
+    let rows = rdr.records().filter_map(Result::ok).collect();
+    Ok((headers, rows))
+}
+
+fn import_expenses_csv(repo: &mut Repository, path: &PathBuf) -> String {
+    let (headers, rows) = match read_csv(path) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let col = |name: &str| headers.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
+    let Some(name_i) = col("name") else {
+        return "CSV needs a 'name' column.".into();
+    };
+    let Some(amount_i) = col("amount") else {
+        return "CSV needs an 'amount' column.".into();
+    };
+    let date_i = col("date");
+    let note_i = col("note");
+    let today = dates::today();
+    let mut imported = 0u32;
+    let mut skipped = 0u32;
+    for rec in &rows {
+        let name = rec.get(name_i).map(str::trim).unwrap_or("");
+        let amount = rec.get(amount_i).and_then(|s| s.trim().parse::<f64>().ok());
+        let (false, Some(amount)) = (name.is_empty(), amount) else {
+            skipped += 1;
+            continue;
+        };
+        let date = date_i
+            .and_then(|i| rec.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| today.clone());
+        let note = note_i
+            .and_then(|i| rec.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let e = Expense {
+            id: 0,
+            name: name.to_string(),
+            amount,
+            date,
+            note,
+        };
+        match repo.insert_expense(&e) {
+            Ok(_) => imported += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    format!("Imported {} expense(s); skipped {}.", imported, skipped)
+}
+
+fn import_payments_csv(repo: &mut Repository, path: &PathBuf) -> String {
+    let (headers, rows) = match read_csv(path) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let col = |name: &str| headers.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
+    let member_id_i = col("member_id");
+    let member_name_i = col("member_name");
+    if member_id_i.is_none() && member_name_i.is_none() {
+        return "CSV needs a 'member_id' or 'member_name' column.".into();
+    }
+    let Some(period_i) = col("period_month") else {
+        return "CSV needs a 'period_month' column.".into();
+    };
+    let Some(amount_i) = col("amount") else {
+        return "CSV needs an 'amount' column.".into();
+    };
+    let date_i = col("date");
+    let category_i = col("category");
+    let note_i = col("note");
+    let members = repo.list_members(false).unwrap_or_default();
+    let mut imported = 0u32;
+    let mut skipped = 0u32;
+    for rec in &rows {
+        let csv_name = member_name_i
+            .and_then(|i| rec.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let by_id = member_id_i
+            .and_then(|i| rec.get(i))
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .and_then(|id| members.iter().find(|m| m.id == id));
+        let by_name =
+            csv_name.and_then(|name| members.iter().find(|m| m.name.eq_ignore_ascii_case(name)));
+        // An id from another database's id-space can collide with a different
+        // member here, so trust an id match only when the name agrees (or there
+        // is no name column); otherwise resolve by name.
+        let member = match (by_id, csv_name) {
+            (Some(m), Some(name)) if m.name.eq_ignore_ascii_case(name) => Some(m),
+            (Some(m), None) => Some(m),
+            _ => by_name.or(by_id),
+        };
+        let period = rec.get(period_i).map(str::trim).unwrap_or("");
+        let amount = rec.get(amount_i).and_then(|s| s.trim().parse::<f64>().ok());
+        let (Some(member), Some(amount)) = (member, amount) else {
+            skipped += 1;
+            continue;
+        };
+        if period.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let date = date_i
+            .and_then(|i| rec.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{period}-15"));
+        let category = category_i
+            .and_then(|i| rec.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("membership")
+            .to_string();
+        let note = note_i
+            .and_then(|i| rec.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let p = Payment {
+            id: 0,
+            member_id: member.id,
+            period_month: period.to_string(),
+            amount,
+            date,
+            note,
+            category,
+        };
+        match repo.insert_payment(&p) {
+            Ok(_) => imported += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    format!("Imported {} payment(s); skipped {}.", imported, skipped)
+}
+
+fn import_sales_csv(repo: &mut Repository, path: &PathBuf) -> String {
+    let (headers, rows) = match read_csv(path) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let col = |name: &str| headers.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
+    let Some(sale_id_i) = col("sale_id") else {
+        return "CSV needs a 'sale_id' column.".into();
+    };
+    let Some(date_i) = col("date") else {
+        return "CSV needs a 'date' column.".into();
+    };
+    let total_i = col("sale_total");
+    let product_i = col("product_id");
+    let qty_i = col("qty");
+    let price_i = col("unit_price");
+
+    // Sales span multiple rows (one per line item), so group by the source
+    // sale_id, keeping first-seen order. product_id is preserved as-is: imports
+    // don't touch current stock, since old product ids may not exist here.
+    type Group = (String, Option<f64>, Vec<(Option<i64>, i64, f64)>);
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: std::collections::HashMap<String, Group> = std::collections::HashMap::new();
+    for rec in &rows {
+        let sid = rec.get(sale_id_i).map(str::trim).unwrap_or("").to_string();
+        if sid.is_empty() {
+            continue;
+        }
+        let date = rec.get(date_i).map(str::trim).unwrap_or("").to_string();
+        let total = total_i
+            .and_then(|i| rec.get(i))
+            .and_then(|s| s.trim().parse::<f64>().ok());
+        let entry = grouped.entry(sid.clone()).or_insert_with(|| {
+            order.push(sid.clone());
+            (date, total, Vec::new())
+        });
+        let qty = qty_i
+            .and_then(|i| rec.get(i))
+            .and_then(|s| s.trim().parse::<i64>().ok());
+        let price = price_i
+            .and_then(|i| rec.get(i))
+            .and_then(|s| s.trim().parse::<f64>().ok());
+        if let (Some(qty), Some(price)) = (qty, price) {
+            let product_id = product_i
+                .and_then(|i| rec.get(i))
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            entry.2.push((product_id, qty, price));
+        }
+    }
+
+    let mut imported = 0u32;
+    let mut skipped = 0u32;
+    for sid in &order {
+        let (date, total, items) = &grouped[sid];
+        if date.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let total = total.unwrap_or_else(|| {
+            items.iter().map(|(_, q, p)| *q as f64 * *p).sum()
+        });
+        match repo.import_sale(date, total, items) {
+            Ok(_) => imported += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    format!("Imported {} sale(s); skipped {}.", imported, skipped)
+}
+
 fn import_members_csv(repo: &mut Repository, path: &PathBuf) -> String {
     let file = match File::open(path) {
         Ok(f) => f,
@@ -356,6 +598,15 @@ fn import_members_csv(repo: &mut Repository, path: &PathBuf) -> String {
     let phone_idx = headers
         .iter()
         .position(|h| h.trim().eq_ignore_ascii_case("phone"));
+    let join_idx = headers
+        .iter()
+        .position(|h| h.trim().eq_ignore_ascii_case("join_date"));
+    let active_idx = headers
+        .iter()
+        .position(|h| h.trim().eq_ignore_ascii_case("active"));
+    let notes_idx = headers
+        .iter()
+        .position(|h| h.trim().eq_ignore_ascii_case("notes"));
     let Some(name_idx) = name_idx else {
         return "CSV needs a 'Name' column.".into();
     };
@@ -385,14 +636,29 @@ fn import_members_csv(repo: &mut Repository, path: &PathBuf) -> String {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let join_date = join_idx
+            .and_then(|i| record.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| today.clone());
+        let active = active_idx
+            .and_then(|i| record.get(i))
+            .map(str::trim)
+            .map(|s| !matches!(s.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "inactive"))
+            .unwrap_or(true);
+        let notes = notes_idx
+            .and_then(|i| record.get(i))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let m = Member {
             id: 0,
             name: name.to_string(),
             phone,
-            join_date: today.clone(),
-            active: true,
-            notes: None,
-            registration_fee_paid: false,
+            join_date,
+            active,
+            notes,
         };
         let r = tx.execute(
             "INSERT INTO members(name, phone, join_date, active, notes)

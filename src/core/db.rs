@@ -153,5 +153,20 @@ fn add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // Records the moment a row was entered, so same-day transactions order by
+    // real time. ALTER ADD COLUMN can't take a dynamic default, so add it
+    // nullable and backfill existing rows from their (day-only) date.
+    for table in ["payments", "sales", "expenses"] {
+        if !has_column(conn, table, "created_at")? {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN created_at TEXT"),
+                [],
+            )?;
+            conn.execute(
+                &format!("UPDATE {table} SET created_at = date WHERE created_at IS NULL"),
+                [],
+            )?;
+        }
+    }
     Ok(())
 }

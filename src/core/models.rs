@@ -6,7 +6,6 @@ pub struct Member {
     pub join_date: String,
     pub active: bool,
     pub notes: Option<String>,
-    pub registration_fee_paid: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +24,7 @@ pub struct Payment {
     pub amount: f64,
     pub date: String,
     pub note: Option<String>,
-    /// `membership` | `trial` | `registration`
+    /// `membership` | `registration`
     pub category: String,
 }
 
