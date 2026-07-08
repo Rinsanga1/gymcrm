@@ -105,11 +105,15 @@ impl SettingsState {
                 && self.registration_fee.parse::<f64>().is_ok()
                 && !self.currency.trim().is_empty();
             if ui.add_enabled(valid, egui::Button::new("Save settings")).clicked() {
-                let _ = repo.set_setting("gym_name", self.gym_name.trim());
-                let _ = repo.set_setting("default_monthly_fee", self.monthly_fee.trim());
-                let _ = repo.set_setting("registration_fee", self.registration_fee.trim());
-                let _ = repo.set_setting("currency", self.currency.trim());
-                self.status = Some("Saved.".into());
+                let result = repo
+                    .set_setting("gym_name", self.gym_name.trim())
+                    .and_then(|_| repo.set_setting("default_monthly_fee", self.monthly_fee.trim()))
+                    .and_then(|_| repo.set_setting("registration_fee", self.registration_fee.trim()))
+                    .and_then(|_| repo.set_setting("currency", self.currency.trim()));
+                self.status = Some(match result {
+                    Ok(()) => "Saved.".into(),
+                    Err(e) => format!("Save failed: {e}"),
+                });
             }
             if let Some(s) = &self.status {
                 ui.weak(s);

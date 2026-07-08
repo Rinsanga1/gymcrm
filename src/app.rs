@@ -110,6 +110,12 @@ impl App {
                 self.merchandise.invalidate();
                 self.expenses.invalidate();
                 self.transactions.invalidate();
+                self.gym_name = self
+                    .repo
+                    .get_setting("gym_name")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "RocheCRM".into());
             }
             ui.add_space(2.0);
         }
