@@ -233,6 +233,7 @@ impl MerchandiseState {
         }
         let mut action: Option<Action> = None;
         let row_height = 34.0;
+        crate::ui::wide_table(ui, 620.0, |ui| {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -293,6 +294,7 @@ impl MerchandiseState {
                     });
                 });
             });
+        });
         action
     }
 
@@ -311,6 +313,7 @@ impl MerchandiseState {
         }
         let mut action: Option<Action> = None;
         let row_height = 34.0;
+        crate::ui::wide_table(ui, 640.0, |ui| {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -363,6 +366,7 @@ impl MerchandiseState {
                     });
                 });
             });
+        });
         action
     }
 

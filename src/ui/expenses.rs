@@ -98,6 +98,7 @@ impl ExpensesState {
                 }
             });
         } else {
+        crate::ui::wide_table(ui, 720.0, |ui| {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -150,6 +151,7 @@ impl ExpensesState {
                     });
                 });
             });
+        });
         }
 
         if let Some(a) = action {

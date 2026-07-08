@@ -65,16 +65,24 @@ impl DashboardState {
         });
 
         ui.add_space(12.0);
-        egui::Grid::new("kpis").num_columns(4).spacing([12.0, 12.0]).show(ui, |ui| {
-            kpi(ui, "Total income", &format!("{} {:.2}", currency, total_income));
-            kpi(ui, "Membership", &format!("{} {:.2}", currency, membership));
-            kpi(ui, "Registration", &format!("{} {:.2}", currency, registration));
-            kpi(ui, "Merchandise", &format!("{} {:.2} ({} units)", currency, merch, merch_units));
-            ui.end_row();
-            kpi(ui, "Expenses", &format!("{} {:.2}", currency, expenses));
-            kpi(ui, "Members (total)", &format!("{}", total_members));
-            kpi(ui, "Active members", &format!("{}", active_members));
-            ui.end_row();
+        let kpis = [
+            ("Total income", format!("{} {:.2}", currency, total_income)),
+            ("Membership", format!("{} {:.2}", currency, membership)),
+            ("Registration", format!("{} {:.2}", currency, registration)),
+            ("Merchandise", format!("{} {:.2} ({} units)", currency, merch, merch_units)),
+            ("Expenses", format!("{} {:.2}", currency, expenses)),
+            ("Members (total)", format!("{}", total_members)),
+            ("Active members", format!("{}", active_members)),
+        ];
+        // Fewer columns on narrow windows so the cards never clip off the edge.
+        let cols = if ui.available_width() < 800.0 { 2 } else { 4 };
+        egui::Grid::new("kpis").num_columns(cols).spacing([12.0, 12.0]).show(ui, |ui| {
+            for (i, (label, value)) in kpis.iter().enumerate() {
+                kpi(ui, label, value);
+                if (i + 1) % cols == 0 {
+                    ui.end_row();
+                }
+            }
         });
 
         ui.add_space(12.0);

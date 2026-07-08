@@ -451,6 +451,7 @@ impl MembersState {
             });
         } else {
         let row_height = 34.0;
+        crate::ui::wide_table(ui, 820.0, |ui| {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -534,6 +535,7 @@ impl MembersState {
                     });
                 });
             });
+        });
         }
 
         if let Some(a) = action {

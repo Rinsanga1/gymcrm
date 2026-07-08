@@ -8,6 +8,21 @@ pub mod transactions;
 
 use eframe::egui;
 
+/// Keep a wide table usable on small screens: it fills the panel when there is
+/// room and scrolls horizontally when the columns don't fit. egui_extras tables
+/// have no horizontal scroll of their own, so without this the rightmost column
+/// (usually Actions) clips off the edge with no way to reach it. `min_width` is
+/// the table's natural width — the sum of its column minimums.
+pub fn wide_table(ui: &mut egui::Ui, min_width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let target = min_width.max(ui.available_width());
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_width(target);
+            add(ui);
+        });
+}
+
 /// A `YYYY-MM-DD` text field with a "Today" shortcut button beside it, so the
 /// common case (today) is one click instead of typing a full date.
 pub fn date_edit(ui: &mut egui::Ui, value: &mut String) {
