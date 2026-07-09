@@ -98,11 +98,11 @@ fn removing_registration_deletes_its_transaction() {
     r.ensure_registration_payment(id, 500.0, "2026-03-15", "2026-03")
         .unwrap();
     assert!(r.has_registration_payment(id).unwrap());
-    let before = r.list_transactions().unwrap().len();
+    let before = r.list_transactions(None).unwrap().len();
 
     r.remove_registration_payment(id).unwrap();
     assert!(!r.has_registration_payment(id).unwrap());
-    assert_eq!(r.list_transactions().unwrap().len(), before - 1);
+    assert_eq!(r.list_transactions(None).unwrap().len(), before - 1);
     assert!(r.payments_for_member(id).unwrap().is_empty());
 }
 
@@ -121,7 +121,7 @@ fn covered_month_is_paid_but_not_income_or_transaction() {
             .unwrap(),
         0.0
     );
-    assert!(r.list_transactions().unwrap().iter().all(|t| t.amount != 0.0));
+    assert!(r.list_transactions(None).unwrap().iter().all(|t| t.amount != 0.0));
 }
 
 #[test]

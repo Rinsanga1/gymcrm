@@ -133,6 +133,19 @@ pub fn months_ago(n: u32) -> String {
     fmt(today_naive() - Months::new(n))
 }
 
+/// `YYYY-MM-DD` for `n` days before today — a rolling window's start.
+pub fn days_ago(n: u64) -> String {
+    fmt(today_naive() - Days::new(n))
+}
+
+/// `YYYY-MM-DD` → `Jul 08` for a human-scannable ledger. The year is redundant
+/// under a month header, so it's dropped. Falls back to the raw string.
+pub fn short_date(s: &str) -> String {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map(|d| d.format("%b %d").to_string())
+        .unwrap_or_else(|_| s.to_string())
+}
+
 /// Inclusive `YYYY-MM` months from `from` to `to` (both `YYYY-MM`), oldest
 /// first. Empty if either is unparseable or `to` is before `from`.
 pub fn months_between(from: &str, to: &str) -> Vec<String> {

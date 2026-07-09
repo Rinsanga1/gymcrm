@@ -6,6 +6,12 @@ pub const ACCENT: Color32 = Color32::from_rgb(94, 106, 210);
 /// Roche Fitness Gym brand bronze, lifted from the logo and warmed for contrast.
 pub const BRONZE: Color32 = Color32::from_rgb(200, 144, 78);
 
+/// Money/status semantics. Money is money in any theme, so these stay fixed
+/// across light and dark rather than shifting with the palette.
+pub const POSITIVE: Color32 = Color32::from_rgb(45, 170, 95);
+pub const NEGATIVE: Color32 = Color32::from_rgb(210, 90, 90);
+pub const WARNING: Color32 = Color32::from_rgb(215, 135, 45);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Light,
@@ -90,18 +96,18 @@ fn dark() -> Palette {
 fn gray() -> Palette {
     Palette {
         dark_mode: true,
-        main: Color32::from_rgb(43, 46, 51),
-        sidebar: Color32::from_rgb(38, 40, 45),
-        card: Color32::from_rgb(48, 51, 56),
-        faint: Color32::from_rgb(41, 44, 49),
-        border: Color32::from_rgb(60, 64, 70),
-        border_strong: Color32::from_rgb(74, 78, 85),
-        text: Color32::from_rgb(228, 225, 220),
-        text_muted: Color32::from_rgb(154, 160, 168),
-        btn: Color32::from_rgb(54, 58, 64),
-        btn_hover: Color32::from_rgb(64, 68, 75),
-        btn_active: Color32::from_rgb(73, 78, 86),
-        nav_selected: Color32::from_rgb(62, 67, 74),
+        main: Color32::from_rgb(30, 32, 36),
+        sidebar: Color32::from_rgb(26, 28, 31),
+        card: Color32::from_rgb(35, 37, 41),
+        faint: Color32::from_rgb(28, 30, 34),
+        border: Color32::from_rgb(46, 49, 54),
+        border_strong: Color32::from_rgb(60, 63, 69),
+        text: Color32::from_rgb(224, 221, 216),
+        text_muted: Color32::from_rgb(146, 152, 160),
+        btn: Color32::from_rgb(40, 43, 48),
+        btn_hover: Color32::from_rgb(49, 52, 58),
+        btn_active: Color32::from_rgb(58, 61, 68),
+        nav_selected: Color32::from_rgb(47, 50, 56),
         accent: BRONZE,
     }
 }

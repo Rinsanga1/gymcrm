@@ -326,18 +326,24 @@ impl Repository {
 
     /// Every money movement (payments, sales, expenses) newest-first, for the
     /// Transactions history view. Expense amounts are negated (money out).
-    pub fn list_transactions(&self) -> rusqlite::Result<Vec<Txn>> {
+    /// The unified ledger, newest first. `since` (a `YYYY-MM-DD` lower bound)
+    /// pushes the date window into SQL so a "last 30 days" view scans 30 days of
+    /// rows, not the whole history; `None` returns everything.
+    pub fn list_transactions(&self, since: Option<&str>) -> rusqlite::Result<Vec<Txn>> {
         // Each entry is (created_at, Txn); created_at breaks same-day ties so
         // rows across the three sources order by when they were recorded.
         let mut out: Vec<(String, Txn)> = Vec::new();
+        let bound: Vec<&str> = since.iter().copied().collect();
 
-        let mut stmt = self.conn.prepare(
+        let pay_sql = format!(
             "SELECT p.id, p.date, p.amount, p.category, p.note, m.name,
                     COALESCE(p.created_at, p.date)
              FROM payments p LEFT JOIN members m ON m.id = p.member_id
-             WHERE p.amount <> 0",
-        )?;
-        let rows = stmt.query_map([], |r| {
+             WHERE p.amount <> 0{}",
+            if since.is_some() { " AND p.date >= ?1" } else { "" },
+        );
+        let mut stmt = self.conn.prepare(&pay_sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(&bound), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -350,10 +356,7 @@ impl Repository {
         })?;
         for row in rows {
             let (id, date, amount, category, note, name, created_at) = row?;
-            let cat = match category.as_str() {
-                "registration" => "Registration",
-                _ => "Membership",
-            };
+            let cat = crate::core::models::category_label(&category);
             let label = match &name {
                 Some(n) => format!("{cat} · {n}"),
                 None => cat.to_string(),
@@ -371,15 +374,18 @@ impl Repository {
             ));
         }
 
-        let mut stmt = self.conn.prepare(
+        let sale_sql = format!(
             "SELECT s.id, s.date, s.total, COALESCE(s.created_at, s.date),
                     group_concat(si.qty || '× ' || COALESCE(p.name, '(removed)'), ' · ')
              FROM sales s
              LEFT JOIN sale_items si ON si.sale_id = s.id
              LEFT JOIN products p ON p.id = si.product_id
+             {}
              GROUP BY s.id, s.date, s.total, s.created_at",
-        )?;
-        let rows = stmt.query_map([], |r| {
+            if since.is_some() { "WHERE s.date >= ?1" } else { "" },
+        );
+        let mut stmt = self.conn.prepare(&sale_sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(&bound), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -403,10 +409,12 @@ impl Repository {
             ));
         }
 
-        let mut stmt = self.conn.prepare(
-            "SELECT id, date, amount, note, name, COALESCE(created_at, date) FROM expenses",
-        )?;
-        let rows = stmt.query_map([], |r| {
+        let exp_sql = format!(
+            "SELECT id, date, amount, note, name, COALESCE(created_at, date) FROM expenses{}",
+            if since.is_some() { " WHERE date >= ?1" } else { "" },
+        );
+        let mut stmt = self.conn.prepare(&exp_sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(&bound), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -810,31 +818,34 @@ impl Repository {
 
     /// Daily total revenue (payments + sales) in [start, end]. Missing days
     /// are omitted; caller can zero-fill against `dates::days_inclusive`.
-    pub fn daily_revenue(
-        &self,
-        start: &str,
-        end: &str,
-    ) -> rusqlite::Result<std::collections::HashMap<String, f64>> {
-        let mut out: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-        let mut stmt = self.conn.prepare(
-            "SELECT date, SUM(amount) FROM payments WHERE date >= ?1 AND date <= ?2 GROUP BY date",
-        )?;
-        for row in stmt.query_map(params![start, end], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-        })? {
-            let (d, v) = row?;
-            *out.entry(d).or_default() += v;
-        }
-        let mut stmt = self.conn.prepare(
-            "SELECT date, SUM(total) FROM sales WHERE date >= ?1 AND date <= ?2 GROUP BY date",
-        )?;
-        for row in stmt.query_map(params![start, end], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-        })? {
-            let (d, v) = row?;
-            *out.entry(d).or_default() += v;
-        }
-        Ok(out)
+    /// Revenue (member payments + merch sales) per calendar month, oldest first,
+    /// zero-filled across the trailing `months` months up to today. The dashboard
+    /// trend is monthly because billing is monthly — a daily line is mostly empty
+    /// days between payment spikes.
+    pub fn monthly_revenue(&self, months: u32) -> rusqlite::Result<Vec<(String, f64)>> {
+        let mut sums: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut add = |sql: &str| -> rusqlite::Result<()> {
+            let mut stmt = self.conn.prepare(sql)?;
+            for row in stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+            })? {
+                let (ym, v) = row?;
+                *sums.entry(ym).or_default() += v;
+            }
+            Ok(())
+        };
+        add("SELECT substr(date,1,7) AS ym, SUM(amount) FROM payments GROUP BY ym")?;
+        add("SELECT substr(date,1,7) AS ym, SUM(total) FROM sales GROUP BY ym")?;
+
+        let to = dates::current_month();
+        let from = dates::months_ago(months.saturating_sub(1));
+        Ok(dates::months_between(&from[..7], &to)
+            .into_iter()
+            .map(|m| {
+                let v = *sums.get(&m).unwrap_or(&0.0);
+                (m, v)
+            })
+            .collect())
     }
 
     pub fn merch_units(&self, start: &str, end: &str) -> rusqlite::Result<i64> {

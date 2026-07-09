@@ -81,7 +81,7 @@ impl SettingsState {
             ui.label("Default monthly fee");
             ui.text_edit_singleline(&mut self.monthly_fee);
             ui.end_row();
-            ui.label("Registration fee");
+            ui.label("Joining fee");
             ui.text_edit_singleline(&mut self.registration_fee);
             ui.end_row();
             ui.label("Currency");

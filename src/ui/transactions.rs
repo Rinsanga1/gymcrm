@@ -12,7 +12,41 @@ struct MonthGroup {
     items: Vec<crate::core::models::Txn>,
 }
 
+/// A rolling time window for the ledger. Rolling (not calendar) so the view is
+/// meaningful on any day — "This month" would be one row on the 1st.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Range {
+    Last30,
+    Last90,
+    Last12mo,
+    All,
+}
+
+impl Range {
+    const ALL: [Range; 4] = [Range::Last30, Range::Last90, Range::Last12mo, Range::All];
+
+    fn label(self) -> &'static str {
+        match self {
+            Range::Last30 => "Last 30 days",
+            Range::Last90 => "Last 90 days",
+            Range::Last12mo => "Last 12 months",
+            Range::All => "All time",
+        }
+    }
+
+    /// Inclusive start date (`YYYY-MM-DD`), or `None` for no lower bound.
+    fn start(self) -> Option<String> {
+        match self {
+            Range::Last30 => Some(dates::days_ago(30)),
+            Range::Last90 => Some(dates::days_ago(90)),
+            Range::Last12mo => Some(dates::months_ago(12)),
+            Range::All => None,
+        }
+    }
+}
+
 pub struct TransactionsState {
+    range: Range,
     groups: Vec<MonthGroup>,
     dirty: bool,
 }
@@ -20,6 +54,7 @@ pub struct TransactionsState {
 impl Default for TransactionsState {
     fn default() -> Self {
         Self {
+            range: Range::Last30,
             groups: Vec::new(),
             dirty: true,
         }
@@ -32,7 +67,10 @@ impl TransactionsState {
     }
 
     fn reload(&mut self, repo: &Repository) {
-        let txns = repo.list_transactions().unwrap_or_default();
+        let start = self.range.start();
+        let txns = repo
+            .list_transactions(start.as_deref())
+            .unwrap_or_default();
         let mut groups: Vec<MonthGroup> = Vec::new();
         let mut cur: Option<String> = None;
         for t in txns {
@@ -67,12 +105,27 @@ impl TransactionsState {
         ui.weak("A read-only record of every payment, sale, and expense. Edit these where they live in Members, Merchandise, and Expenses.");
         ui.add_space(8.0);
 
+        ui.horizontal_wrapped(|ui| {
+            for r in Range::ALL {
+                if ui.selectable_label(self.range == r, r.label()).clicked() {
+                    self.range = r;
+                    self.dirty = true;
+                }
+            }
+        });
+        ui.add_space(8.0);
+
         let currency = repo.currency();
 
         if self.groups.is_empty() {
+            let msg = if self.range == Range::All {
+                "No transactions yet.".to_string()
+            } else {
+                format!("No transactions in the {}.", self.range.label().to_lowercase())
+            };
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No transactions yet.").weak());
+                ui.label(RichText::new(msg).weak());
             });
             return;
         }
@@ -101,12 +154,14 @@ impl TransactionsState {
                             egui::Label::new(RichText::new("Date").color(muted).size(11.0))
                                 .halign(egui::Align::LEFT),
                         );
-                        ui.add_sized(
-                            [desc_w, 14.0],
-                            egui::Label::new(
-                                RichText::new("Description").color(muted).size(11.0),
-                            )
-                            .halign(egui::Align::LEFT),
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(desc_w, 14.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    RichText::new("Description").color(muted).size(11.0),
+                                );
+                            },
                         );
                         ui.allocate_ui_with_layout(
                             egui::vec2(amt_w, 14.0),
@@ -156,7 +211,9 @@ impl TransactionsState {
                                     ui.add_sized(
                                         [date_w, row_h],
                                         egui::Label::new(
-                                            RichText::new(&t.date).color(muted).size(12.5),
+                                            RichText::new(dates::short_date(&t.date))
+                                                .color(muted)
+                                                .size(12.5),
                                         )
                                         .halign(egui::Align::LEFT),
                                     );
@@ -187,7 +244,13 @@ impl TransactionsState {
                                         break_anywhere: false,
                                         overflow_character: Some('\u{2026}'),
                                     };
-                                    ui.add_sized([desc_w, row_h], egui::Label::new(job));
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(desc_w, row_h),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(egui::Label::new(job));
+                                        },
+                                    );
                                     ui.allocate_ui_with_layout(
                                         egui::vec2(amt_w, row_h),
                                         egui::Layout::right_to_left(egui::Align::Center),

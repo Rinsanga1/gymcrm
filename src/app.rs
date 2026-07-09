@@ -183,13 +183,43 @@ impl eframe::App for App {
         let dashboard = &mut self.dashboard;
         let settings = &mut self.settings;
         let view = self.view;
-        egui::CentralPanel::default().show_inside(ui, |ui| match view {
-            View::Dashboard => dashboard.show(ui, repo),
-            View::Members => members.show(ui, repo),
-            View::Merchandise => merchandise.show(ui, repo),
-            View::Expenses => expenses.show(ui, repo),
-            View::Transactions => transactions.show(ui, repo),
-            View::Settings => settings.show(ui, repo),
-        });
+        let nav = egui::CentralPanel::default()
+            .show_inside(ui, |ui| match view {
+                View::Dashboard => dashboard.show(ui, repo),
+                View::Members => {
+                    members.show(ui, repo);
+                    None
+                }
+                View::Merchandise => {
+                    merchandise.show(ui, repo);
+                    None
+                }
+                View::Expenses => {
+                    expenses.show(ui, repo);
+                    None
+                }
+                View::Transactions => {
+                    transactions.show(ui, repo);
+                    None
+                }
+                View::Settings => {
+                    settings.show(ui, repo);
+                    None
+                }
+            })
+            .inner;
+
+        if let Some(nav) = nav {
+            use crate::ui::dashboard::DashNav;
+            match nav {
+                DashNav::Members => self.view = View::Members,
+                DashNav::MembersDue => {
+                    self.view = View::Members;
+                    self.members.focus_due();
+                }
+                DashNav::LowStock => self.view = View::Merchandise,
+                DashNav::Transactions => self.view = View::Transactions,
+            }
+        }
     }
 }

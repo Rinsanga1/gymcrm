@@ -85,9 +85,20 @@ struct PaymentsEditor {
     reg_paid: bool,
     reg_fee: f64,
     error: Option<String>,
+    // Amounts as they stood at the last successful save. The "Saved" confirmation
+    // shows only while the current amounts still match this, so any edit clears it.
+    saved_amounts: Option<Vec<(String, bool)>>,
 }
 
 impl PaymentsEditor {
+    fn snapshot(&self) -> Vec<(String, bool)> {
+        self.entries.iter().map(|e| (e.amount.clone(), e.covered)).collect()
+    }
+
+    fn is_saved(&self) -> bool {
+        self.saved_amounts.as_ref() == Some(&self.snapshot())
+    }
+
     fn new(m: &Member, payments: &[Payment], reg_fee: f64) -> Self {
         let cur_year: i32 = dates::current_month()
             .get(..4)
@@ -121,6 +132,7 @@ impl PaymentsEditor {
             reg_paid,
             reg_fee,
             error: None,
+            saved_amounts: None,
         }
     }
 
@@ -189,7 +201,7 @@ impl PaymentsEditor {
                         member_id: self.member_id,
                         period_month: e.month.clone(),
                         amount: amt,
-                        date: format!("{}-15", e.month),
+                        date: dates::today(),
                         note: None,
                         category: "membership".to_string(),
                     })?;
@@ -266,8 +278,8 @@ impl MemberFilter {
             MemberFilter::All => "All members",
             MemberFilter::PaidUp => "Paid up",
             MemberFilter::Due => "Owes payment",
-            MemberFilter::RegPaid => "Registration paid",
-            MemberFilter::RegDue => "Registration due",
+            MemberFilter::RegPaid => "Joining fee paid",
+            MemberFilter::RegDue => "Joining fee due",
         }
     }
     fn matches(
@@ -323,14 +335,7 @@ fn opt(s: &str) -> Option<String> {
     }
 }
 
-/// Capitalize the first letter (e.g. `membership` → `Membership`).
-fn cap(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
+
 
 /// A small rounded pill used for member flags (registration due).
 fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
@@ -348,6 +353,15 @@ impl MembersState {
     /// Drop the cached row set so the next `show()` re-queries the DB.
     /// Call this after any external mutation (e.g. CSV import).
     pub fn invalidate(&mut self) {
+        self.loaded = false;
+    }
+
+    /// Open the roster pre-filtered to members who owe payment. Used by the
+    /// dashboard's "Members due" hero so the number drills through to the list.
+    pub fn focus_due(&mut self) {
+        self.filter = MemberFilter::Due;
+        self.show_inactive = false;
+        self.search.clear();
         self.loaded = false;
     }
 
@@ -718,7 +732,7 @@ impl MembersState {
                                         for p in payments.iter() {
                                             ui.label(&p.date);
                                             ui.label(&p.period_month);
-                                            ui.label(cap(&p.category));
+                                            ui.label(crate::core::models::category_label(&p.category));
                                             ui.label(format!("{} {:.0}", currency, p.amount));
                                             ui.end_row();
                                         }
@@ -776,7 +790,7 @@ impl MembersState {
                                             member_id: p.member_id,
                                             period_month: p.month.clone(),
                                             amount: amt,
-                                            date: format!("{}-15", p.month),
+                                            date: dates::today(),
                                             note: None,
                                             category: "membership".to_string(),
                                         })
@@ -958,6 +972,11 @@ impl MembersState {
                                     egui::Color32::from_rgb(210, 120, 40),
                                     "Fix highlighted amounts",
                                 );
+                            } else if ed.is_saved() {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(40, 170, 90),
+                                    "✓ Saved",
+                                );
                             }
                         });
                         if let Some(err) = &ed.error {
@@ -973,6 +992,7 @@ impl MembersState {
                             ed.reload(&payments);
                             ed.set_year(new_year);
                             ed.error = None;
+                            ed.saved_amounts = None;
                         }
                         Err(e) => {
                             ed.error = Some(format!(
@@ -996,6 +1016,7 @@ impl MembersState {
                                 repo.payments_for_member(ed.member_id).unwrap_or_default();
                             ed.reload(&payments);
                             status_update = Some(None);
+                            ed.saved_amounts = None;
                         }
                         Err(e) => ed.error = Some(format!("Couldn't update joining fee — {e}")),
                     }
@@ -1008,6 +1029,7 @@ impl MembersState {
                                 repo.payments_for_member(ed.member_id).unwrap_or_default();
                             ed.reload(&payments);
                             ed.error = None;
+                            ed.saved_amounts = Some(ed.snapshot());
                         }
                         Err(e) => ed.error = Some(format!("Couldn't save changes — {e}")),
                     }

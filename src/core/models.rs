@@ -28,6 +28,17 @@ pub struct Payment {
     pub category: String,
 }
 
+/// The word the user reads for a payment category. `membership` dues are a
+/// "Monthly fee"; the one-time `registration` charge is the "Joining fee" —
+/// the same words the Record Payment dialog uses. Keep this the one place that
+/// names them so the ledger, dashboard, and member history never disagree.
+pub fn category_label(category: &str) -> &'static str {
+    match category {
+        "registration" => "Joining fee",
+        _ => "Monthly fee",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Product {
     pub id: i64,
