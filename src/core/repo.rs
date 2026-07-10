@@ -1,7 +1,9 @@
 use rusqlite::{params, Connection, Row};
 
 use super::dates;
-use super::models::{Expense, Member, Payment, Product, Sale, SaleItem, Txn, TxnKind};
+use super::models::{
+    Expense, Member, Payment, Product, RecurringExpense, Sale, SaleItem, Txn, TxnKind,
+};
 
 /// Thin data-access layer over the SQLite connection. UI-free and testable.
 pub struct Repository {
@@ -329,19 +331,49 @@ impl Repository {
     /// The unified ledger, newest first. `since` (a `YYYY-MM-DD` lower bound)
     /// pushes the date window into SQL so a "last 30 days" view scans 30 days of
     /// rows, not the whole history; `None` returns everything.
-    pub fn list_transactions(&self, since: Option<&str>) -> rusqlite::Result<Vec<Txn>> {
+    /// Distinct calendar years that have any payment, sale, or expense, newest
+    /// first. Powers the year dropdown in the Transactions filter.
+    pub fn transaction_years(&self) -> rusqlite::Result<Vec<i32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT y FROM (
+                SELECT CAST(substr(date, 1, 4) AS INTEGER) y FROM payments
+                UNION SELECT CAST(substr(date, 1, 4) AS INTEGER) FROM sales
+                UNION SELECT CAST(substr(date, 1, 4) AS INTEGER) FROM expenses
+             ) ORDER BY y DESC",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Distinct calendar years that have any sale, newest first. Powers the year
+    /// dropdown in the Merchandise (Sales) filter.
+    pub fn sale_years(&self) -> rusqlite::Result<Vec<i32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT CAST(substr(date, 1, 4) AS INTEGER) y FROM sales ORDER BY y DESC",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Transactions with `date` in `[start, end]` (each `None` = unbounded).
+    pub fn list_transactions(
+        &self,
+        start: Option<&str>,
+        end: Option<&str>,
+    ) -> rusqlite::Result<Vec<Txn>> {
         // Each entry is (created_at, Txn); created_at breaks same-day ties so
         // rows across the three sources order by when they were recorded.
         let mut out: Vec<(String, Txn)> = Vec::new();
-        let bound: Vec<&str> = since.iter().copied().collect();
+        let lo = start.unwrap_or("0000-01-01");
+        let hi = end.unwrap_or("9999-12-31");
+        let bound: [&str; 2] = [lo, hi];
 
-        let pay_sql = format!(
+        let pay_sql =
             "SELECT p.id, p.date, p.amount, p.category, p.note, m.name,
                     COALESCE(p.created_at, p.date)
              FROM payments p LEFT JOIN members m ON m.id = p.member_id
-             WHERE p.amount <> 0{}",
-            if since.is_some() { " AND p.date >= ?1" } else { "" },
-        );
+             WHERE p.amount <> 0 AND p.date BETWEEN ?1 AND ?2"
+                .to_string();
         let mut stmt = self.conn.prepare(&pay_sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(&bound), |r| {
             Ok((
@@ -374,16 +406,15 @@ impl Repository {
             ));
         }
 
-        let sale_sql = format!(
+        let sale_sql =
             "SELECT s.id, s.date, s.total, COALESCE(s.created_at, s.date),
                     group_concat(si.qty || '× ' || COALESCE(p.name, '(removed)'), ' · ')
              FROM sales s
              LEFT JOIN sale_items si ON si.sale_id = s.id
              LEFT JOIN products p ON p.id = si.product_id
-             {}
-             GROUP BY s.id, s.date, s.total, s.created_at",
-            if since.is_some() { "WHERE s.date >= ?1" } else { "" },
-        );
+             WHERE s.date BETWEEN ?1 AND ?2
+             GROUP BY s.id, s.date, s.total, s.created_at"
+                .to_string();
         let mut stmt = self.conn.prepare(&sale_sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(&bound), |r| {
             Ok((
@@ -409,10 +440,10 @@ impl Repository {
             ));
         }
 
-        let exp_sql = format!(
-            "SELECT id, date, amount, note, name, COALESCE(created_at, date) FROM expenses{}",
-            if since.is_some() { " WHERE date >= ?1" } else { "" },
-        );
+        let exp_sql =
+            "SELECT id, date, amount, note, name, COALESCE(created_at, date) FROM expenses
+             WHERE date BETWEEN ?1 AND ?2"
+                .to_string();
         let mut stmt = self.conn.prepare(&exp_sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(&bound), |r| {
             Ok((
@@ -719,6 +750,26 @@ impl Repository {
         rows.collect()
     }
 
+    /// Every `(sale_id, product_id, qty)` line for sales in `[start, end]`, in a
+    /// single query. Lets the caller build per-sale summaries in one pass instead
+    /// of an N+1 `sale_items` call per sale.
+    pub fn sale_item_lines_between(
+        &self,
+        start: &str,
+        end: &str,
+    ) -> rusqlite::Result<Vec<(i64, Option<i64>, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT si.sale_id, si.product_id, si.qty
+             FROM sale_items si JOIN sales s ON s.id = si.sale_id
+             WHERE s.date BETWEEN ?1 AND ?2
+             ORDER BY si.sale_id, si.id",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        rows.collect()
+    }
+
     pub fn sale_items(&self, sale_id: i64) -> rusqlite::Result<Vec<SaleItem>> {
         let mut stmt = self
             .conn
@@ -898,6 +949,44 @@ impl Repository {
             .prepare("SELECT * FROM expenses ORDER BY date DESC, id DESC")?;
         let rows = stmt.query_map([], expense_from_row)?;
         rows.collect()
+    }
+
+    // ---- Recurring expense templates -----------------------------------
+
+    pub fn list_recurring_expenses(&self) -> rusqlite::Result<Vec<RecurringExpense>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, amount FROM recurring_expenses ORDER BY name")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(RecurringExpense {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                amount: r.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn insert_recurring_expense(&self, r: &RecurringExpense) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO recurring_expenses(name, amount) VALUES (?1, ?2)",
+            params![r.name, r.amount],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_recurring_expense(&self, r: &RecurringExpense) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE recurring_expenses SET name=?1, amount=?2 WHERE id=?3",
+            params![r.name, r.amount, r.id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_recurring_expense(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM recurring_expenses WHERE id=?1", [id])?;
+        Ok(())
     }
 
     pub fn total_expenses(&self, start: &str, end: &str) -> rusqlite::Result<f64> {

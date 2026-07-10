@@ -3,20 +3,24 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::core::dates::{self, Period};
+use crate::core::dates::{self, MonthFilter};
 use crate::core::models::{Product, Sale};
 use crate::core::Repository;
 
-const SALE_PERIODS: [Period; 6] = [
-    Period::AllTime,
-    Period::Today,
-    Period::ThisWeek,
-    Period::ThisMonth,
-    Period::ThisQuarter,
-    Period::ThisYear,
-];
-
 const LOW_STOCK_THRESHOLD: i64 = 5;
+
+/// Like `ui::wide_table` (horizontal scroll so wide columns stay reachable) but
+/// hugs its content height instead of filling the panel — so a second table
+/// stacked below it stays on screen. Each table keeps its own vertical scroll.
+fn scroll_table(ui: &mut egui::Ui, min_width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let target = min_width.max(ui.available_width());
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.set_width(target);
+            add(ui);
+        });
+}
 
 #[derive(Default)]
 struct ProductForm {
@@ -82,11 +86,19 @@ enum Dialog {
     ConfirmDeleteSale { id: i64 },
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Products,
+    Sales,
+}
+
 pub struct MerchandiseState {
     products: Vec<Product>,
     sales: Vec<Sale>,
     sale_summaries: HashMap<i64, String>,
-    period: Period,
+    filter: MonthFilter,
+    years: Vec<i32>,
+    tab: Tab,
     dirty: bool,
     dialog: Dialog,
 }
@@ -97,7 +109,9 @@ impl Default for MerchandiseState {
             products: Vec::new(),
             sales: Vec::new(),
             sale_summaries: HashMap::new(),
-            period: Period::ThisMonth,
+            filter: MonthFilter::current(),
+            years: Vec::new(),
+            tab: Tab::Products,
             dirty: true,
             dialog: Dialog::None,
         }
@@ -120,32 +134,33 @@ impl MerchandiseState {
 
     fn reload(&mut self, repo: &Repository) {
         self.products = repo.list_products().unwrap_or_default();
-        let (start, end) = self.period.range();
+        self.years =
+            crate::ui::year_options(repo.sale_years().unwrap_or_default(), self.filter.year);
+        let (start, end) = self.filter.range();
         self.sales = repo.list_sales_between(&start, &end).unwrap_or_default();
-        self.sale_summaries = self
-            .sales
-            .iter()
-            .map(|s| (s.id, self.summarize_sale(repo, s.id)))
-            .collect();
+        self.sale_summaries = self.build_summaries(repo, &start, &end);
         self.dirty = false;
     }
 
-    /// One-line "2× Water · 1× Protein" summary, built once per reload so rows
-    /// don't hit the DB every frame.
-    fn summarize_sale(&self, repo: &Repository, sale_id: i64) -> String {
-        repo.sale_items(sale_id)
-            .unwrap_or_default()
-            .iter()
-            .map(|it| {
-                let name = it
-                    .product_id
-                    .and_then(|pid| self.products.iter().find(|p| p.id == pid))
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("(removed)");
-                format!("{}× {}", it.qty, name)
-            })
-            .collect::<Vec<_>>()
-            .join(" · ")
+    /// One-line "2× Water · 1× Protein" summary per sale, built for the whole
+    /// period in a single query so a 800-sale period is one round-trip, not 800.
+    fn build_summaries(&self, repo: &Repository, start: &str, end: &str) -> HashMap<i64, String> {
+        let names: HashMap<i64, &str> =
+            self.products.iter().map(|p| (p.id, p.name.as_str())).collect();
+        let mut out: HashMap<i64, String> = HashMap::new();
+        for (sale_id, product_id, qty) in
+            repo.sale_item_lines_between(start, end).unwrap_or_default()
+        {
+            let name = product_id
+                .and_then(|pid| names.get(&pid).copied())
+                .unwrap_or("(removed)");
+            let line = out.entry(sale_id).or_default();
+            if !line.is_empty() {
+                line.push_str(" · ");
+            }
+            line.push_str(&format!("{}× {}", qty, name));
+        }
+        out
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, repo: &mut Repository) {
@@ -168,48 +183,58 @@ impl MerchandiseState {
         });
         ui.separator();
 
-        let low = self
-            .products
-            .iter()
-            .filter(|p| p.active && p.stock <= LOW_STOCK_THRESHOLD)
-            .count();
-        if low > 0 {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 140, 40),
-                format!("{} product(s) low on stock (≤ {})", low, LOW_STOCK_THRESHOLD),
-            );
-        }
-
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("Products").strong());
-        ui.add_space(4.0);
-        action = ui
-            .push_id("merch_products", |ui| self.products_table(ui))
-            .inner
-            .or(action);
-
-        ui.add_space(18.0);
-        ui.separator();
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Recent sales").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak("Full history lives in Transactions.");
-            });
-        });
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            for p in SALE_PERIODS {
-                if ui.selectable_label(self.period == p, p.label()).clicked() {
-                    self.period = p;
-                    self.dirty = true;
-                }
+            if ui.selectable_label(self.tab == Tab::Products, "Products").clicked() {
+                self.tab = Tab::Products;
+            }
+            if ui.selectable_label(self.tab == Tab::Sales, "Sales").clicked() {
+                self.tab = Tab::Sales;
             }
         });
-        ui.add_space(4.0);
-        action = ui
-            .push_id("merch_sales", |ui| self.sales_table(ui))
-            .inner
-            .or(action);
+        ui.separator();
+        ui.add_space(6.0);
+
+        match self.tab {
+            Tab::Products => {
+                let low = self
+                    .products
+                    .iter()
+                    .filter(|p| p.active && p.stock <= LOW_STOCK_THRESHOLD)
+                    .count();
+                if low > 0 {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 140, 40),
+                        format!("{} product(s) low on stock (≤ {})", low, LOW_STOCK_THRESHOLD),
+                    );
+                    ui.add_space(4.0);
+                }
+                action = ui
+                    .push_id("merch_products", |ui| self.products_table(ui))
+                    .inner
+                    .or(action);
+            }
+            Tab::Sales => {
+                ui.horizontal(|ui| {
+                    if crate::ui::year_month_filter(
+                        ui,
+                        "sales_filter",
+                        &mut self.filter,
+                        &self.years,
+                    ) {
+                        self.dirty = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.weak("Full history lives in Transactions.");
+                    });
+                });
+                ui.add_space(6.0);
+                action = ui
+                    .push_id("merch_sales", |ui| self.sales_table(ui))
+                    .inner
+                    .or(action);
+            }
+        }
 
         if let Some(a) = action {
             self.handle_action(a, repo);
@@ -233,11 +258,12 @@ impl MerchandiseState {
         }
         let mut action: Option<Action> = None;
         let row_height = 34.0;
-        crate::ui::wide_table(ui, 620.0, |ui| {
+        let table_height = ui.available_height().max(row_height * 5.0);
+        scroll_table(ui, 620.0, |ui| {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
-            .max_scroll_height(row_height * 8.0)
+            .max_scroll_height(table_height)
             .column(Column::auto().at_least(180.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(80.0))
@@ -303,7 +329,7 @@ impl MerchandiseState {
             let mut action = None;
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("No sales in this period.").weak());
+                ui.label(egui::RichText::new(format!("No sales in {}.", self.filter.label())).weak());
                 ui.add_space(6.0);
                 if ui.button("+ Record a sale").clicked() {
                     action = Some(Action::NewSale);
@@ -313,11 +339,12 @@ impl MerchandiseState {
         }
         let mut action: Option<Action> = None;
         let row_height = 34.0;
-        crate::ui::wide_table(ui, 640.0, |ui| {
+        let table_height = ui.available_height().max(row_height * 5.0);
+        scroll_table(ui, 640.0, |ui| {
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
-            .max_scroll_height(row_height * 8.0)
+            .max_scroll_height(table_height)
             .column(Column::auto().at_least(120.0))
             .column(Column::auto().at_least(200.0).clip(true))
             .column(Column::auto().at_least(120.0))

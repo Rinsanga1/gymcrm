@@ -23,6 +23,55 @@ pub fn wide_table(ui: &mut egui::Ui, min_width: f32, add: impl FnOnce(&mut egui:
         });
 }
 
+/// Year + month dropdowns for a calendar filter. `years` is the selectable year
+/// list (newest first); the current year is always included so a fresh database
+/// still has a valid choice. Month offers "All months" plus January–December.
+/// Returns true when the selection changed. `salt` keeps the two combos unique.
+pub fn year_month_filter(
+    ui: &mut egui::Ui,
+    salt: &str,
+    filter: &mut crate::core::dates::MonthFilter,
+    years: &[i32],
+) -> bool {
+    use crate::core::dates::month_name;
+    let before = *filter;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt((salt, "year"))
+            .selected_text(filter.year.to_string())
+            .show_ui(ui, |ui| {
+                for &y in years {
+                    ui.selectable_value(&mut filter.year, y, y.to_string());
+                }
+            });
+        egui::ComboBox::from_id_salt((salt, "month"))
+            .selected_text(match filter.month {
+                Some(m) => month_name(m).to_string(),
+                None => "All months".to_string(),
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut filter.month, None, "All months");
+                for m in 1..=12u32 {
+                    ui.selectable_value(&mut filter.month, Some(m), month_name(m));
+                }
+            });
+    });
+    *filter != before
+}
+
+/// The selectable year list for a filter: the years present in the data plus
+/// the current year, newest first, guaranteeing `also` (the current selection)
+/// is present so the dropdown can always show it.
+pub fn year_options(mut years: Vec<i32>, also: i32) -> Vec<i32> {
+    let this_year: i32 = crate::core::dates::today()[..4].parse().unwrap_or(also);
+    for y in [this_year, also] {
+        if !years.contains(&y) {
+            years.push(y);
+        }
+    }
+    years.sort_unstable_by(|a, b| b.cmp(a));
+    years
+}
+
 /// A `YYYY-MM-DD` text field with a "Today" shortcut button beside it, so the
 /// common case (today) is one click instead of typing a full date.
 pub fn date_edit(ui: &mut egui::Ui, value: &mut String) {

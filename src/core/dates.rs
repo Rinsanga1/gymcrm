@@ -36,57 +36,54 @@ fn fmt(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
 
-/// Predefined dashboard time windows. `Custom` carries inclusive [start, end] strings.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Period {
-    AllTime,
-    Today,
-    ThisWeek,
-    ThisMonth,
-    ThisQuarter,
-    ThisYear,
-    Custom { start: String, end: String },
+/// Full month name for `m` in 1..=12, else empty.
+pub fn month_name(m: u32) -> &'static str {
+    const NAMES: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September",
+        "October", "November", "December",
+    ];
+    NAMES.get((m as usize).wrapping_sub(1)).copied().unwrap_or("")
 }
 
-impl Period {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Period::AllTime => "All Time",
-            Period::Today => "Today",
-            Period::ThisWeek => "This Week",
-            Period::ThisMonth => "This Month",
-            Period::ThisQuarter => "This Quarter",
-            Period::ThisYear => "This Year",
-            Period::Custom { .. } => "Custom",
+/// A calendar filter: a whole `year`, or one `month` within it (`None` = whole
+/// year). More intuitive than rolling windows for "show me July" or "show me
+/// 2025". Shared by the Transactions and Merchandise (Sales) views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonthFilter {
+    pub year: i32,
+    pub month: Option<u32>,
+}
+
+impl MonthFilter {
+    /// Defaults to the current calendar month.
+    pub fn current() -> Self {
+        let t = today_naive();
+        Self {
+            year: t.year(),
+            month: Some(t.month()),
         }
     }
 
-    /// Inclusive [start, end] date strings (YYYY-MM-DD) for SQL filtering.
-    /// `AllTime` uses a very wide range so callers can pass the same params.
+    /// Inclusive [start, end] `YYYY-MM-DD` for SQL filtering.
     pub fn range(&self) -> (String, String) {
-        let today = today_naive();
-        match self {
-            Period::AllTime => ("0000-01-01".into(), "9999-12-31".into()),
-            Period::Today => (fmt(today), fmt(today)),
-            Period::ThisWeek => {
-                let weekday = today.weekday().num_days_from_monday();
-                let start = today - Days::new(weekday as u64);
-                (fmt(start), fmt(today))
+        match self.month {
+            Some(m) => {
+                let start = NaiveDate::from_ymd_opt(self.year, m, 1).unwrap();
+                let end = start + Months::new(1) - Days::new(1);
+                (fmt(start), fmt(end))
             }
-            Period::ThisMonth => {
-                let start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
-                (fmt(start), fmt(today))
-            }
-            Period::ThisQuarter => {
-                let q_start_month = ((today.month() - 1) / 3) * 3 + 1;
-                let start = NaiveDate::from_ymd_opt(today.year(), q_start_month, 1).unwrap();
-                (fmt(start), fmt(today))
-            }
-            Period::ThisYear => {
-                let start = NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap();
-                (fmt(start), fmt(today))
-            }
-            Period::Custom { start, end } => (start.clone(), end.clone()),
+            None => (
+                fmt(NaiveDate::from_ymd_opt(self.year, 1, 1).unwrap()),
+                fmt(NaiveDate::from_ymd_opt(self.year, 12, 31).unwrap()),
+            ),
+        }
+    }
+
+    /// Human label, e.g. "July 2026" or "2025".
+    pub fn label(&self) -> String {
+        match self.month {
+            Some(m) => format!("{} {}", month_name(m), self.year),
+            None => self.year.to_string(),
         }
     }
 }
@@ -131,11 +128,6 @@ pub fn month_diff(from: &str, to: &str) -> i64 {
 /// Convenience: subtract n months from today, returning ISO string.
 pub fn months_ago(n: u32) -> String {
     fmt(today_naive() - Months::new(n))
-}
-
-/// `YYYY-MM-DD` for `n` days before today — a rolling window's start.
-pub fn days_ago(n: u64) -> String {
-    fmt(today_naive() - Days::new(n))
 }
 
 /// `YYYY-MM-DD` → `Jul 08` for a human-scannable ledger. The year is redundant

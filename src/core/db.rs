@@ -89,6 +89,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             note   TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS recurring_expenses (
+            id     INTEGER PRIMARY KEY,
+            name   TEXT NOT NULL,
+            amount REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL

@@ -73,6 +73,16 @@ pub struct Expense {
     pub note: Option<String>,
 }
 
+/// A saved expense template (name + amount) the user picks from when adding an
+/// expense, so recurring bills like rent and salaries aren't retyped. Not
+/// automatic — it only prefills the Add-expense form.
+#[derive(Debug, Clone)]
+pub struct RecurringExpense {
+    pub id: i64,
+    pub name: String,
+    pub amount: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxnKind {
     Payment,

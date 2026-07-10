@@ -12,41 +12,11 @@ struct MonthGroup {
     items: Vec<crate::core::models::Txn>,
 }
 
-/// A rolling time window for the ledger. Rolling (not calendar) so the view is
-/// meaningful on any day — "This month" would be one row on the 1st.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Range {
-    Last30,
-    Last90,
-    Last12mo,
-    All,
-}
-
-impl Range {
-    const ALL: [Range; 4] = [Range::Last30, Range::Last90, Range::Last12mo, Range::All];
-
-    fn label(self) -> &'static str {
-        match self {
-            Range::Last30 => "Last 30 days",
-            Range::Last90 => "Last 90 days",
-            Range::Last12mo => "Last 12 months",
-            Range::All => "All time",
-        }
-    }
-
-    /// Inclusive start date (`YYYY-MM-DD`), or `None` for no lower bound.
-    fn start(self) -> Option<String> {
-        match self {
-            Range::Last30 => Some(dates::days_ago(30)),
-            Range::Last90 => Some(dates::days_ago(90)),
-            Range::Last12mo => Some(dates::months_ago(12)),
-            Range::All => None,
-        }
-    }
-}
+use crate::core::dates::MonthFilter;
 
 pub struct TransactionsState {
-    range: Range,
+    filter: MonthFilter,
+    years: Vec<i32>,
     groups: Vec<MonthGroup>,
     dirty: bool,
 }
@@ -54,7 +24,8 @@ pub struct TransactionsState {
 impl Default for TransactionsState {
     fn default() -> Self {
         Self {
-            range: Range::Last30,
+            filter: MonthFilter::current(),
+            years: Vec::new(),
             groups: Vec::new(),
             dirty: true,
         }
@@ -67,9 +38,11 @@ impl TransactionsState {
     }
 
     fn reload(&mut self, repo: &Repository) {
-        let start = self.range.start();
+        self.years =
+            crate::ui::year_options(repo.transaction_years().unwrap_or_default(), self.filter.year);
+        let (start, end) = self.filter.range();
         let txns = repo
-            .list_transactions(start.as_deref())
+            .list_transactions(Some(&start), Some(&end))
             .unwrap_or_default();
         let mut groups: Vec<MonthGroup> = Vec::new();
         let mut cur: Option<String> = None;
@@ -105,24 +78,15 @@ impl TransactionsState {
         ui.weak("A read-only record of every payment, sale, and expense. Edit these where they live in Members, Merchandise, and Expenses.");
         ui.add_space(8.0);
 
-        ui.horizontal_wrapped(|ui| {
-            for r in Range::ALL {
-                if ui.selectable_label(self.range == r, r.label()).clicked() {
-                    self.range = r;
-                    self.dirty = true;
-                }
-            }
-        });
+        if crate::ui::year_month_filter(ui, "txn_filter", &mut self.filter, &self.years) {
+            self.dirty = true;
+        }
         ui.add_space(8.0);
 
         let currency = repo.currency();
 
         if self.groups.is_empty() {
-            let msg = if self.range == Range::All {
-                "No transactions yet.".to_string()
-            } else {
-                format!("No transactions in the {}.", self.range.label().to_lowercase())
-            };
+            let msg = format!("No transactions in {}.", self.filter.label());
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new(msg).weak());
@@ -133,78 +97,77 @@ impl TransactionsState {
         let muted = crate::ui::theme::text_muted(ui.visuals());
         let text_col = ui.visuals().text_color();
         let hover_bg = ui.visuals().widgets.hovered.weak_bg_fill;
+
+        // Fixed column widths so dates, descriptions and — crucially — amounts
+        // line up in scannable columns. The ledger is one centered column capped
+        // at `cap` so amounts don't drift into dead space on wide windows.
+        let spacing = ui.spacing().item_spacing.x;
+        let pad = 10.0;
+        let date_w = 84.0;
+        let amt_w = 130.0;
+        let cap = 900.0;
+        let total = (ui.available_width() - 24.0).clamp(440.0, cap);
+        let desc_w = (total - pad - date_w - amt_w - spacing * 2.0).max(120.0);
+
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.set_max_width(860.0);
-                    let spacing = ui.spacing().item_spacing.x;
-                    let avail = (ui.available_width() - 4.0).max(440.0);
-                    let pad = 10.0;
-                    let date_w = 92.0;
-                    let amt_w = 120.0;
-                    let desc_w =
-                        (avail - date_w - amt_w - pad * 2.0 - spacing * 2.0).max(150.0);
+                    ui.set_max_width(total);
 
                     // Column headers
-                    ui.horizontal(|ui| {
-                        ui.add_space(pad);
-                        ui.add_sized(
-                            [date_w, 14.0],
-                            egui::Label::new(RichText::new("Date").color(muted).size(11.0))
-                                .halign(egui::Align::LEFT),
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(desc_w, 14.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.label(
-                                    RichText::new("Description").color(muted).size(11.0),
-                                );
-                            },
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(amt_w, 14.0),
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.label(RichText::new("Amount").color(muted).size(11.0));
-                            },
-                        );
-                    });
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(total, 14.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add_space(pad);
+                            ui.add_sized([date_w, 14.0], header_label("Date", muted, egui::Align::LEFT));
+                            ui.add_sized([desc_w, 14.0], header_label("Description", muted, egui::Align::LEFT));
+                            ui.add_sized([amt_w, 14.0], header_label("Amount", muted, egui::Align::RIGHT));
+                        },
+                    );
                     ui.add_space(6.0);
                     ui.separator();
                     ui.spacing_mut().item_spacing.y = 0.0;
 
                     for (gi, g) in self.groups.iter().enumerate() {
                         ui.add_space(if gi == 0 { 10.0 } else { 22.0 });
-                        ui.horizontal(|ui| {
-                            ui.add_space(pad);
-                            ui.label(
-                                RichText::new(g.label.to_uppercase())
-                                    .color(muted)
-                                    .size(11.0),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(amount_text(g.net, &currency).size(12.5));
-                                },
-                            );
-                        });
+                        // Month header: label spans date+description; net sits in
+                        // the amount column so it aligns with every row below.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(total, 18.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add_space(pad);
+                                ui.add_sized(
+                                    [date_w + spacing + desc_w, 18.0],
+                                    egui::Label::new(
+                                        RichText::new(g.label.to_uppercase())
+                                            .color(muted)
+                                            .size(11.0),
+                                    )
+                                    .halign(egui::Align::LEFT),
+                                );
+                                ui.add_sized(
+                                    [amt_w, 18.0],
+                                    egui::Label::new(amount_text(g.net, &currency).size(12.5))
+                                        .halign(egui::Align::RIGHT),
+                                );
+                            },
+                        );
                         ui.add_space(6.0);
 
                         for t in g.items.iter() {
                             let row_h = if t.detail.is_some() { 46.0 } else { 34.0 };
-                            let full_w = ui.available_width();
                             let row_rect = egui::Rect::from_min_size(
                                 ui.next_widget_position(),
-                                egui::vec2(full_w, row_h),
+                                egui::vec2(total, row_h),
                             );
                             if ui.rect_contains_pointer(row_rect) {
                                 ui.painter().rect_filled(row_rect, 6.0, hover_bg);
                             }
                             ui.allocate_ui_with_layout(
-                                egui::vec2(full_w, row_h),
+                                egui::vec2(total, row_h),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.add_space(pad);
@@ -244,21 +207,13 @@ impl TransactionsState {
                                         break_anywhere: false,
                                         overflow_character: Some('\u{2026}'),
                                     };
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(desc_w, row_h),
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            ui.add(egui::Label::new(job));
-                                        },
-                                    );
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(amt_w, row_h),
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                amount_text(t.amount, &currency).size(13.5),
-                                            );
-                                        },
+                                    ui.add_sized([desc_w, row_h], egui::Label::new(job));
+                                    ui.add_sized(
+                                        [amt_w, row_h],
+                                        egui::Label::new(
+                                            amount_text(t.amount, &currency).size(13.5),
+                                        )
+                                        .halign(egui::Align::RIGHT),
                                     );
                                 },
                             );
@@ -268,6 +223,10 @@ impl TransactionsState {
                 });
             });
     }
+}
+
+fn header_label(text: &str, color: Color32, align: egui::Align) -> egui::Label {
+    egui::Label::new(RichText::new(text).color(color).size(11.0)).halign(align)
 }
 
 fn amount_text(amount: f64, currency: &str) -> RichText {

@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::core::dates::{self, Period};
+use crate::core::dates::{self, MonthFilter};
 use crate::core::Repository;
 use crate::ui::theme;
 
@@ -14,17 +14,13 @@ pub enum DashNav {
 }
 
 pub struct DashboardState {
-    period: Period,
-    custom_start: String,
-    custom_end: String,
+    filter: MonthFilter,
 }
 
 impl Default for DashboardState {
     fn default() -> Self {
         Self {
-            period: Period::ThisMonth,
-            custom_start: dates::months_ago(1),
-            custom_end: dates::today(),
+            filter: MonthFilter::current(),
         }
     }
 }
@@ -50,10 +46,12 @@ impl DashboardState {
             return self.onboarding(ui);
         }
 
-        self.period_chips(ui);
+        let years =
+            crate::ui::year_options(repo.transaction_years().unwrap_or_default(), self.filter.year);
+        crate::ui::year_month_filter(ui, "dash_filter", &mut self.filter, &years);
         ui.separator();
 
-        let (start, end) = self.period.range();
+        let (start, end) = self.filter.range();
         let currency = repo.currency();
 
         let membership = repo.category_income("membership", &start, &end).unwrap_or(0.0);
@@ -147,7 +145,7 @@ impl DashboardState {
 
         ui.add_space(12.0);
         section(ui, "Recent activity");
-        let recent = repo.list_transactions(None).unwrap_or_default();
+        let recent = repo.list_transactions(None, None).unwrap_or_default();
         if recent.is_empty() {
             ui.weak("No transactions yet.");
         } else {
@@ -210,56 +208,6 @@ impl DashboardState {
                 }
             });
         nav
-    }
-
-    fn period_chips(&mut self, ui: &mut egui::Ui) {
-        let opts: [Period; 6] = [
-            Period::AllTime,
-            Period::Today,
-            Period::ThisWeek,
-            Period::ThisMonth,
-            Period::ThisQuarter,
-            Period::ThisYear,
-        ];
-        ui.horizontal_wrapped(|ui| {
-            for p in opts {
-                let selected = self.period == p;
-                if ui.selectable_label(selected, p.label()).clicked() {
-                    self.period = p;
-                }
-            }
-            let custom_selected = matches!(self.period, Period::Custom { .. });
-            if ui.selectable_label(custom_selected, "Custom").clicked() {
-                self.period = Period::Custom {
-                    start: self.custom_start.clone(),
-                    end: self.custom_end.clone(),
-                };
-            }
-        });
-        if matches!(self.period, Period::Custom { .. }) {
-            ui.horizontal(|ui| {
-                ui.label("From");
-                if ui.text_edit_singleline(&mut self.custom_start).changed() {
-                    self.period = Period::Custom {
-                        start: self.custom_start.clone(),
-                        end: self.custom_end.clone(),
-                    };
-                }
-                ui.label("to");
-                if ui.text_edit_singleline(&mut self.custom_end).changed() {
-                    self.period = Period::Custom {
-                        start: self.custom_start.clone(),
-                        end: self.custom_end.clone(),
-                    };
-                }
-                if dates::is_valid_date(&self.custom_start) && dates::is_valid_date(&self.custom_end)
-                {
-                    ui.weak("YYYY-MM-DD");
-                } else {
-                    ui.colored_label(theme::NEGATIVE, "Enter dates as YYYY-MM-DD");
-                }
-            });
-        }
     }
 
     fn revenue_chart(&self, ui: &mut egui::Ui, repo: &Repository) {
