@@ -95,6 +95,8 @@ pub struct ExpensesState {
     tab: Tab,
     dirty: bool,
     dialog: Dialog,
+    // An expense to open for editing on the next `show` (tapped from Transactions).
+    pending_edit: Option<i64>,
 }
 
 impl Default for ExpensesState {
@@ -105,11 +107,13 @@ impl Default for ExpensesState {
             tab: Tab::Expenses,
             dirty: true,
             dialog: Dialog::None,
+            pending_edit: None,
         }
     }
 }
 
 enum Action {
+    NewExpense,
     Edit(i64),
     AskDelete(i64),
     EditRecurring(i64),
@@ -122,6 +126,14 @@ impl ExpensesState {
         self.dirty = true;
     }
 
+    /// Open a specific expense for editing — used when a Transactions expense row
+    /// is tapped.
+    pub fn focus_expense(&mut self, id: i64) {
+        self.tab = Tab::Expenses;
+        self.dirty = true;
+        self.pending_edit = Some(id);
+    }
+
     fn reload(&mut self, repo: &Repository) {
         self.rows = repo.list_expenses().unwrap_or_default();
         self.recurring = repo.list_recurring_expenses().unwrap_or_default();
@@ -132,7 +144,11 @@ impl ExpensesState {
         if self.dirty {
             self.reload(repo);
         }
+        if let Some(id) = self.pending_edit.take() {
+            self.handle_action(Action::Edit(id));
+        }
 
+        let currency = repo.currency();
         let mut action: Option<Action> = None;
 
         ui.horizontal(|ui| {
@@ -140,12 +156,12 @@ impl ExpensesState {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 match self.tab {
                     Tab::Expenses => {
-                        if ui.button("+ Add expense").clicked() {
+                        if ui.button("+ New expense").clicked() {
                             self.dialog = Dialog::Edit(ExpenseForm::new_expense());
                         }
                     }
                     Tab::Recurring => {
-                        if ui.button("+ Add recurring").clicked() {
+                        if ui.button("+ New bill").clicked() {
                             self.dialog = Dialog::EditRecurring(RecurringForm::new());
                         }
                     }
@@ -158,7 +174,7 @@ impl ExpensesState {
             if ui.selectable_label(self.tab == Tab::Expenses, "Expenses").clicked() {
                 self.tab = Tab::Expenses;
             }
-            if ui.selectable_label(self.tab == Tab::Recurring, "Recurring").clicked() {
+            if ui.selectable_label(self.tab == Tab::Recurring, "Monthly bills").clicked() {
                 self.tab = Tab::Recurring;
             }
         });
@@ -166,8 +182,8 @@ impl ExpensesState {
         ui.add_space(6.0);
 
         match self.tab {
-            Tab::Expenses => action = self.expenses_table(ui).or(action),
-            Tab::Recurring => action = self.recurring_table(ui).or(action),
+            Tab::Expenses => action = self.expenses_table(ui, &currency).or(action),
+            Tab::Recurring => action = self.recurring_table(ui, &currency).or(action),
         }
 
         if let Some(a) = action {
@@ -177,13 +193,18 @@ impl ExpensesState {
         self.draw_dialog(ui.ctx(), repo);
     }
 
-    fn expenses_table(&self, ui: &mut egui::Ui) -> Option<Action> {
+    fn expenses_table(&self, ui: &mut egui::Ui, currency: &str) -> Option<Action> {
         if self.rows.is_empty() {
+            let mut action = None;
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("No expenses yet.").weak());
+                ui.add_space(6.0);
+                if ui.button("+ New expense").clicked() {
+                    action = Some(Action::NewExpense);
+                }
             });
-            return None;
+            return action;
         }
         let mut action: Option<Action> = None;
         crate::ui::wide_table(ui, 720.0, |ui| {
@@ -222,18 +243,20 @@ impl ExpensesState {
                             ui.label(&e.name);
                         });
                         row.col(|ui| {
-                            ui.label(format!("{:.2}", e.amount));
+                            ui.label(crate::ui::money(currency, e.amount));
                         });
                         row.col(|ui| {
                             ui.label(e.note.as_deref().unwrap_or(""));
                         });
                         row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Edit").clicked() {
+                            ui.menu_button("⋯", |ui| {
+                                if ui.button("Edit").clicked() {
                                     action = Some(Action::Edit(e.id));
+                                    ui.close();
                                 }
-                                if ui.small_button("Delete").clicked() {
+                                if ui.button("Delete").clicked() {
                                     action = Some(Action::AskDelete(e.id));
+                                    ui.close();
                                 }
                             });
                         });
@@ -243,7 +266,7 @@ impl ExpensesState {
         action
     }
 
-    fn recurring_table(&self, ui: &mut egui::Ui) -> Option<Action> {
+    fn recurring_table(&self, ui: &mut egui::Ui, currency: &str) -> Option<Action> {
         if self.recurring.is_empty() {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
@@ -286,19 +309,23 @@ impl ExpensesState {
                             ui.label(&r.name);
                         });
                         row.col(|ui| {
-                            ui.label(format!("{:.2}", r.amount));
+                            ui.label(crate::ui::money(currency, r.amount));
                         });
                         row.col(|ui| {
                             ui.horizontal(|ui| {
-                                if ui.small_button("Log expense").clicked() {
+                                if ui.button("Record this month").clicked() {
                                     action = Some(Action::LogRecurring(r.id));
                                 }
-                                if ui.small_button("Edit").clicked() {
-                                    action = Some(Action::EditRecurring(r.id));
-                                }
-                                if ui.small_button("Delete").clicked() {
-                                    action = Some(Action::AskDeleteRecurring(r.id));
-                                }
+                                ui.menu_button("⋯", |ui| {
+                                    if ui.button("Edit").clicked() {
+                                        action = Some(Action::EditRecurring(r.id));
+                                        ui.close();
+                                    }
+                                    if ui.button("Delete").clicked() {
+                                        action = Some(Action::AskDeleteRecurring(r.id));
+                                        ui.close();
+                                    }
+                                });
                             });
                         });
                     });
@@ -309,6 +336,9 @@ impl ExpensesState {
 
     fn handle_action(&mut self, action: Action) {
         match action {
+            Action::NewExpense => {
+                self.dialog = Dialog::Edit(ExpenseForm::new_expense());
+            }
             Action::Edit(id) => {
                 if let Some(e) = self.rows.iter().find(|e| e.id == id) {
                     self.dialog = Dialog::Edit(ExpenseForm::from(e));
@@ -347,19 +377,19 @@ impl ExpensesState {
                             ui.horizontal(|ui| {
                                 ui.label("From recurring");
                                 let selected = if form.picked == 0 {
-                                    "Custom (write your own)".to_string()
+                                    "One-off (type it in)".to_string()
                                 } else {
                                     recurring
                                         .iter()
                                         .find(|r| r.id == form.picked)
                                         .map(|r| r.name.clone())
-                                        .unwrap_or_else(|| "Custom (write your own)".into())
+                                        .unwrap_or_else(|| "One-off (type it in)".into())
                                 };
                                 egui::ComboBox::from_id_salt("exp_recurring")
                                     .selected_text(selected)
                                     .show_ui(ui, |ui| {
                                         if ui
-                                            .selectable_label(form.picked == 0, "Custom (write your own)")
+                                            .selectable_label(form.picked == 0, "One-off (type it in)")
                                             .clicked()
                                         {
                                             form.picked = 0;
@@ -424,6 +454,12 @@ impl ExpensesState {
                             if ui.button("Cancel").clicked() {
                                 close = true;
                             }
+                            if !valid {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(210, 120, 40),
+                                    "Name, date, and a numeric amount required",
+                                );
+                            }
                         });
                     });
             }
@@ -484,6 +520,12 @@ impl ExpensesState {
                         }
                         if ui.button("Cancel").clicked() {
                             close = true;
+                        }
+                        if !valid {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(210, 120, 40),
+                                "Name and a numeric amount required",
+                            );
                         }
                     });
                 });

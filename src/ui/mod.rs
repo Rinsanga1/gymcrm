@@ -8,6 +8,23 @@ pub mod transactions;
 
 use eframe::egui;
 
+/// The one place money reads on screen: `Rs 1,500` — currency prefix, grouped
+/// thousands, no decimals (a rupee gym doesn't bill paise). Every figure in the
+/// app routes through here so they all match and all honor the currency setting.
+pub fn money(currency: &str, amount: f64) -> String {
+    let n = amount.round().abs() as u64;
+    let mut digits = n.to_string();
+    let mut grouped = String::new();
+    while digits.len() > 3 {
+        let split = digits.len() - 3;
+        grouped = format!(",{}{}", &digits[split..], grouped);
+        digits.truncate(split);
+    }
+    grouped = format!("{digits}{grouped}");
+    let sign = if amount.round() < 0.0 { "-" } else { "" };
+    format!("{sign}{currency} {grouped}")
+}
+
 /// Keep a wide table usable on small screens: it fills the panel when there is
 /// room and scrolls horizontally when the columns don't fit. egui_extras tables
 /// have no horizontal scroll of their own, so without this the rightmost column

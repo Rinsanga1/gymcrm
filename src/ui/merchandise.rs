@@ -101,6 +101,8 @@ pub struct MerchandiseState {
     tab: Tab,
     dirty: bool,
     dialog: Dialog,
+    // A sale to open for editing on the next `show` (tapped from Transactions).
+    pending_edit_sale: Option<i64>,
 }
 
 impl Default for MerchandiseState {
@@ -114,6 +116,7 @@ impl Default for MerchandiseState {
             tab: Tab::Products,
             dirty: true,
             dialog: Dialog::None,
+            pending_edit_sale: None,
         }
     }
 }
@@ -130,6 +133,14 @@ enum Action {
 impl MerchandiseState {
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+
+    /// Open a specific sale for editing — used when a Transactions sale row is
+    /// tapped.
+    pub fn focus_sale(&mut self, id: i64) {
+        self.tab = Tab::Sales;
+        self.dirty = true;
+        self.pending_edit_sale = Some(id);
     }
 
     fn reload(&mut self, repo: &Repository) {
@@ -167,11 +178,15 @@ impl MerchandiseState {
         if self.dirty {
             self.reload(repo);
         }
+        if let Some(id) = self.pending_edit_sale.take() {
+            self.handle_action(Action::EditSale(id), repo);
+        }
 
+        let currency = repo.currency();
         let mut action: Option<Action> = None;
 
         ui.horizontal(|ui| {
-            ui.heading("Merchandise");
+            ui.heading("Shop");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ Record sale").clicked() {
                     action = Some(Action::NewSale);
@@ -205,12 +220,12 @@ impl MerchandiseState {
                 if low > 0 {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 140, 40),
-                        format!("{} product(s) low on stock (≤ {})", low, LOW_STOCK_THRESHOLD),
+                        format!("{} product(s) running low", low),
                     );
                     ui.add_space(4.0);
                 }
                 action = ui
-                    .push_id("merch_products", |ui| self.products_table(ui))
+                    .push_id("merch_products", |ui| self.products_table(ui, &currency))
                     .inner
                     .or(action);
             }
@@ -230,7 +245,7 @@ impl MerchandiseState {
                 });
                 ui.add_space(6.0);
                 action = ui
-                    .push_id("merch_sales", |ui| self.sales_table(ui))
+                    .push_id("merch_sales", |ui| self.sales_table(ui, &currency))
                     .inner
                     .or(action);
             }
@@ -243,7 +258,7 @@ impl MerchandiseState {
         self.draw_dialog(ui.ctx(), repo);
     }
 
-    fn products_table(&self, ui: &mut egui::Ui) -> Option<Action> {
+    fn products_table(&self, ui: &mut egui::Ui, currency: &str) -> Option<Action> {
         if self.products.is_empty() {
             let mut action = None;
             ui.add_space(24.0);
@@ -293,7 +308,7 @@ impl MerchandiseState {
                         ui.label(&p.name);
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.2}", p.price));
+                        ui.label(crate::ui::money(currency, p.price));
                     });
                     row.col(|ui| {
                         if p.active && p.stock <= LOW_STOCK_THRESHOLD {
@@ -306,15 +321,17 @@ impl MerchandiseState {
                         }
                     });
                     row.col(|ui| {
-                        ui.label(if p.active { "Active" } else { "Inactive" });
+                        ui.label(if p.active { "Available" } else { "Hidden" });
                     });
                     row.col(|ui| {
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Edit").clicked() {
+                        ui.menu_button("⋯", |ui| {
+                            if ui.button("Edit").clicked() {
                                 action = Some(Action::EditProduct(p.id));
+                                ui.close();
                             }
-                            if ui.small_button("Delete").clicked() {
+                            if ui.button("Delete").clicked() {
                                 action = Some(Action::AskDeleteProduct(p.id, p.name.clone()));
+                                ui.close();
                             }
                         });
                     });
@@ -324,7 +341,7 @@ impl MerchandiseState {
         action
     }
 
-    fn sales_table(&self, ui: &mut egui::Ui) -> Option<Action> {
+    fn sales_table(&self, ui: &mut egui::Ui, currency: &str) -> Option<Action> {
         if self.sales.is_empty() {
             let mut action = None;
             ui.add_space(24.0);
@@ -379,15 +396,17 @@ impl MerchandiseState {
                             .on_hover_text(summary);
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.2}", s.total));
+                        ui.label(crate::ui::money(currency, s.total));
                     });
                     row.col(|ui| {
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Edit").clicked() {
+                        ui.menu_button("⋯", |ui| {
+                            if ui.button("Edit").clicked() {
                                 action = Some(Action::EditSale(s.id));
+                                ui.close();
                             }
-                            if ui.small_button("Delete").clicked() {
+                            if ui.button("Delete").clicked() {
                                 action = Some(Action::AskDeleteSale(s.id));
+                                ui.close();
                             }
                         });
                     });
@@ -425,7 +444,15 @@ impl MerchandiseState {
             }
             Action::EditSale(id) => {
                 let items = repo.sale_items(id).unwrap_or_default();
-                if let Some(s) = self.sales.iter().find(|s| s.id == id).cloned() {
+                // Fall back to a direct lookup so a sale outside the current month
+                // filter (e.g. tapped from Transactions) still opens.
+                let sale = self
+                    .sales
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                    .or_else(|| repo.list_sales().ok().and_then(|v| v.into_iter().find(|s| s.id == id)));
+                if let Some(s) = sale {
                     let lines = items
                         .iter()
                         .filter_map(|it| {
@@ -455,6 +482,7 @@ impl MerchandiseState {
 
     fn draw_dialog(&mut self, ctx: &egui::Context, repo: &mut Repository) {
         let mut close = false;
+        let currency = repo.currency();
         match &mut self.dialog {
             Dialog::None => {}
             Dialog::Product(form) => {
@@ -463,7 +491,7 @@ impl MerchandiseState {
                     .resizable(false)
                     .show(ctx, |ui| {
                         egui::Grid::new("prod_form").num_columns(2).show(ui, |ui| {
-                            ui.label("Name *");
+                            ui.label("Name");
                             ui.text_edit_singleline(&mut form.name);
                             ui.end_row();
                             ui.label("Price");
@@ -472,14 +500,14 @@ impl MerchandiseState {
                             ui.label("Stock");
                             ui.text_edit_singleline(&mut form.stock);
                             ui.end_row();
-                            ui.label("Active");
+                            ui.label("Available");
                             ui.checkbox(&mut form.active, "");
                             ui.end_row();
                         });
+                        let valid = !form.name.trim().is_empty()
+                            && form.price.parse::<f64>().is_ok()
+                            && form.stock.parse::<i64>().is_ok();
                         ui.horizontal(|ui| {
-                            let valid = !form.name.trim().is_empty()
-                                && form.price.parse::<f64>().is_ok()
-                                && form.stock.parse::<i64>().is_ok();
                             if ui.add_enabled(valid, egui::Button::new("Save")).clicked() {
                                 let p = Product {
                                     id: form.id,
@@ -500,6 +528,12 @@ impl MerchandiseState {
                             }
                             if ui.button("Cancel").clicked() {
                                 close = true;
+                            }
+                            if !valid {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(210, 120, 40),
+                                    "Name required; price and stock must be numbers",
+                                );
                             }
                         });
                     });
@@ -538,11 +572,11 @@ impl MerchandiseState {
                                             ui.selectable_value(
                                                 &mut line.product_id,
                                                 p.id,
-                                                format!("{} (Rs {:.0}, stock {})", p.name, p.price, p.stock),
+                                                format!("{} ({}, stock {})", p.name, crate::ui::money(&currency, p.price), p.stock),
                                             );
                                         }
                                     });
-                                ui.label("qty");
+                                ui.label("Qty");
                                 ui.add(egui::TextEdit::singleline(&mut line.qty).desired_width(50.0));
                                 if let (Some(p), Ok(q)) = (
                                     products.iter().find(|p| p.id == line.product_id),
@@ -550,7 +584,7 @@ impl MerchandiseState {
                                 ) {
                                     let sub = p.price * q as f64;
                                     total += sub;
-                                    ui.label(format!("= Rs {:.2}", sub));
+                                    ui.label(format!("= {}", crate::ui::money(&currency, sub)));
                                 }
                                 if ui.small_button("✕").clicked() {
                                     remove_idx = Some(i);
@@ -570,7 +604,7 @@ impl MerchandiseState {
                                 });
                             }
                             ui.add_space(12.0);
-                            ui.strong(format!("Total: Rs {:.2}", total));
+                            ui.strong(format!("Total: {}", crate::ui::money(&currency, total)));
                         });
                         ui.separator();
                         let items: Vec<(i64, i64, f64)> = form
@@ -600,6 +634,12 @@ impl MerchandiseState {
                             }
                             if ui.button("Cancel").clicked() {
                                 close = true;
+                            }
+                            if !valid {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(210, 120, 40),
+                                    "Add at least one line with a quantity",
+                                );
                             }
                         });
                     });

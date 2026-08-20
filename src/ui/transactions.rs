@@ -1,7 +1,16 @@
 use eframe::egui::{self, Color32, FontId, RichText};
 
 use crate::core::dates;
+use crate::core::models::TxnKind;
 use crate::core::Repository;
+
+/// A click on a transaction row, resolved by `app.rs` into navigation to the
+/// tab where that record lives (GPay-style: tap a line to open it).
+pub enum TxnNav {
+    Member(i64),
+    Sale(i64),
+    Expense(i64),
+}
 
 const INCOME: Color32 = Color32::from_rgb(45, 170, 95);
 const OUTGOING: Color32 = Color32::from_rgb(210, 90, 90);
@@ -68,14 +77,14 @@ impl TransactionsState {
         self.dirty = false;
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, repo: &mut Repository) {
+    pub fn show(&mut self, ui: &mut egui::Ui, repo: &mut Repository) -> Option<TxnNav> {
         if self.dirty {
             self.reload(repo);
         }
 
         ui.add_space(4.0);
         ui.heading("Transactions");
-        ui.weak("A read-only record of every payment, sale, and expense. Edit these where they live in Members, Merchandise, and Expenses.");
+        ui.weak("Every payment, sale, and expense. Tap one to edit it where it lives.");
         ui.add_space(8.0);
 
         if crate::ui::year_month_filter(ui, "txn_filter", &mut self.filter, &self.years) {
@@ -84,6 +93,7 @@ impl TransactionsState {
         ui.add_space(8.0);
 
         let currency = repo.currency();
+        let mut nav: Option<TxnNav> = None;
 
         if self.groups.is_empty() {
             let msg = format!("No transactions in {}.", self.filter.label());
@@ -91,7 +101,7 @@ impl TransactionsState {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new(msg).weak());
             });
-            return;
+            return None;
         }
 
         let muted = crate::ui::theme::text_muted(ui.visuals());
@@ -157,14 +167,33 @@ impl TransactionsState {
                         );
                         ui.add_space(6.0);
 
-                        for t in g.items.iter() {
+                        for (ri, t) in g.items.iter().enumerate() {
                             let row_h = if t.detail.is_some() { 46.0 } else { 34.0 };
                             let row_rect = egui::Rect::from_min_size(
                                 ui.next_widget_position(),
                                 egui::vec2(total, row_h),
                             );
+                            let resp = ui.interact(
+                                row_rect,
+                                egui::Id::new(("txn_row", gi, ri)),
+                                egui::Sense::click(),
+                            );
+                            if resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
                             if ui.rect_contains_pointer(row_rect) {
                                 ui.painter().rect_filled(row_rect, 6.0, hover_bg);
+                            }
+                            if resp.clicked() {
+                                nav = match &t.kind {
+                                    TxnKind::Payment => repo
+                                        .get_payment(t.id)
+                                        .ok()
+                                        .flatten()
+                                        .map(|p| TxnNav::Member(p.member_id)),
+                                    TxnKind::Sale => Some(TxnNav::Sale(t.id)),
+                                    TxnKind::Expense => Some(TxnNav::Expense(t.id)),
+                                };
                             }
                             ui.allocate_ui_with_layout(
                                 egui::vec2(total, row_h),
@@ -222,6 +251,7 @@ impl TransactionsState {
                     ui.add_space(16.0);
                 });
             });
+        nav
     }
 }
 
@@ -233,5 +263,5 @@ fn amount_text(amount: f64, currency: &str) -> RichText {
     let income = amount >= 0.0;
     let sign = if income { "+" } else { "-" };
     let color = if income { INCOME } else { OUTGOING };
-    RichText::new(format!("{sign}{currency} {:.0}", amount.abs())).color(color)
+    RichText::new(format!("{sign}{}", crate::ui::money(currency, amount.abs()))).color(color)
 }

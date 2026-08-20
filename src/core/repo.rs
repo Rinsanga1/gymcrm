@@ -171,6 +171,42 @@ impl Repository {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// How a member comes to exist: insert the member together with their
+    /// mandatory one-time joining fee and (optionally) this month's membership
+    /// payment, all in one transaction. A waiver is a joining fee of 0 — a
+    /// deliberate, logged registration row, not a skipped step.
+    pub fn create_member(
+        &mut self,
+        m: &Member,
+        joining_fee: f64,
+        first_month: Option<f64>,
+        month: &str,
+        date: &str,
+    ) -> rusqlite::Result<i64> {
+        let now = dates::now();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO members(name, phone, join_date, active, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![m.name, m.phone, m.join_date, m.active as i64, m.notes],
+        )?;
+        let member_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO payments(member_id, period_month, amount, date, note, category, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, 'registration', ?5)",
+            params![member_id, month, joining_fee, date, now],
+        )?;
+        if let Some(fee) = first_month.filter(|v| *v > 0.0) {
+            tx.execute(
+                "INSERT INTO payments(member_id, period_month, amount, date, note, category, created_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL, 'membership', ?5)",
+                params![member_id, month, fee, date, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(member_id)
+    }
+
     pub fn update_member(&self, m: &Member) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE members SET name=?1, phone=?2, join_date=?3, active=?4, notes=?5

@@ -26,7 +26,7 @@ impl View {
         match self {
             View::Dashboard => "Dashboard",
             View::Members => "Members",
-            View::Merchandise => "Merchandise",
+            View::Merchandise => "Shop",
             View::Expenses => "Expenses",
             View::Transactions => "Transactions",
             View::Settings => "Settings",
@@ -185,7 +185,7 @@ impl eframe::App for App {
         let view = self.view;
         let nav = egui::CentralPanel::default()
             .show_inside(ui, |ui| match view {
-                View::Dashboard => dashboard.show(ui, repo),
+                View::Dashboard => dashboard.show(ui, repo).map(Nav::Dash),
                 View::Members => {
                     members.show(ui, repo);
                     None
@@ -198,10 +198,7 @@ impl eframe::App for App {
                     expenses.show(ui, repo);
                     None
                 }
-                View::Transactions => {
-                    transactions.show(ui, repo);
-                    None
-                }
+                View::Transactions => transactions.show(ui, repo).map(Nav::Txn),
                 View::Settings => {
                     settings.show(ui, repo);
                     None
@@ -209,17 +206,44 @@ impl eframe::App for App {
             })
             .inner;
 
-        if let Some(nav) = nav {
-            use crate::ui::dashboard::DashNav;
-            match nav {
-                DashNav::Members => self.view = View::Members,
-                DashNav::MembersDue => {
-                    self.view = View::Members;
-                    self.members.focus_due();
+        match nav {
+            Some(Nav::Dash(d)) => {
+                use crate::ui::dashboard::DashNav;
+                match d {
+                    DashNav::Members => self.view = View::Members,
+                    DashNav::MembersDue => {
+                        self.view = View::Members;
+                        self.members.focus_due();
+                    }
+                    DashNav::LowStock => self.view = View::Merchandise,
+                    DashNav::Transactions => self.view = View::Transactions,
                 }
-                DashNav::LowStock => self.view = View::Merchandise,
-                DashNav::Transactions => self.view = View::Transactions,
             }
+            Some(Nav::Txn(t)) => {
+                use crate::ui::transactions::TxnNav;
+                match t {
+                    TxnNav::Member(id) => {
+                        self.view = View::Members;
+                        self.members.focus_member(id);
+                    }
+                    TxnNav::Sale(id) => {
+                        self.view = View::Merchandise;
+                        self.merchandise.focus_sale(id);
+                    }
+                    TxnNav::Expense(id) => {
+                        self.view = View::Expenses;
+                        self.expenses.focus_expense(id);
+                    }
+                }
+            }
+            None => {}
         }
     }
+}
+
+/// A navigation intent bubbled up from a tab: either the dashboard's drill-downs
+/// or a Transactions row tapped to open its source record.
+enum Nav {
+    Dash(crate::ui::dashboard::DashNav),
+    Txn(crate::ui::transactions::TxnNav),
 }

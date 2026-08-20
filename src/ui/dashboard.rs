@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::core::dates::{self, MonthFilter};
 use crate::core::Repository;
+use crate::ui::money;
 use crate::ui::theme;
 
 /// A click on the dashboard that the app turns into navigation. The dashboard
@@ -36,7 +37,7 @@ impl DashboardState {
     fn body(&mut self, ui: &mut egui::Ui, repo: &mut Repository) -> Option<DashNav> {
         let mut nav = None;
 
-        ui.label(egui::RichText::new("Dashboard").size(24.0).strong());
+        ui.heading("Dashboard");
         ui.add_space(6.0);
 
         // Brand-new install: a wall of zeros helps no one. Point them at the
@@ -95,14 +96,14 @@ impl DashboardState {
         // The headline is the two heroes above; the per-category figures are a
         // breakdown you open when you want it, not seven numbers shouting at once.
         let kpis = [
-            ("Monthly fees", money(&currency, membership)),
+            ("Membership", money(&currency, membership)),
             ("Joining fees", money(&currency, registration)),
-            ("Merchandise", format!("{} ({} units)", money(&currency, merch), merch_units)),
+            ("Shop", format!("{} ({} units)", money(&currency, merch), merch_units)),
             ("Expenses", money(&currency, expenses)),
-            ("Members (total)", total_members.to_string()),
+            ("Total members", total_members.to_string()),
             ("Active members", active_members.to_string()),
         ];
-        egui::CollapsingHeader::new("Breakdown")
+        egui::CollapsingHeader::new("See the breakdown")
             .default_open(false)
             .show(ui, |ui| {
                 // Fewer columns on narrow windows so the cards never clip off the edge.
@@ -290,12 +291,6 @@ impl DashboardState {
 const MON: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-
-/// Money with a currency prefix and two decimals — the one place we decide how
-/// money reads on this screen, so every figure matches.
-fn money(currency: &str, amount: f64) -> String {
-    format!("{} {:.2}", currency, amount)
-}
 
 /// A muted section label, quieter than the page title so hierarchy reads.
 fn section(ui: &mut egui::Ui, text: &str) {

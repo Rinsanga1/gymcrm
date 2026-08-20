@@ -17,13 +17,30 @@ struct MemberForm {
     active: bool,
     editing: bool,
     error: Option<String>,
+    // New-member only: the mandatory joining fee and an optional first month.
+    joining_fee: String,
+    month_fee: String,
+    month: String,
+}
+
+/// "August 2026" from a `YYYY-MM`, falling back to the raw string.
+fn month_label(month: &str) -> String {
+    month
+        .get(5..7)
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| (1..=12).contains(n))
+        .map(|n| format!("{} {}", MONTH_NAMES[n - 1], &month[..4]))
+        .unwrap_or_else(|| month.to_string())
 }
 
 impl MemberForm {
-    fn new_member() -> Self {
+    fn new_member(repo: &Repository) -> Self {
         Self {
             join_date: dates::today(),
             active: true,
+            joining_fee: format!("{:.0}", repo.registration_fee()),
+            month_fee: format!("{:.0}", repo.default_monthly_fee()),
+            month: dates::current_month(),
             ..Default::default()
         }
     }
@@ -37,6 +54,7 @@ impl MemberForm {
             active: m.active,
             editing: true,
             error: None,
+            ..Default::default()
         }
     }
     fn to_member(&self) -> Member {
@@ -82,8 +100,6 @@ struct PaymentsEditor {
     min_year: i32,
     max_year: i32,
     entries: Vec<MonthEntry>,
-    reg_paid: bool,
-    reg_fee: f64,
     error: Option<String>,
     // Amounts as they stood at the last successful save. The "Saved" confirmation
     // shows only while the current amounts still match this, so any edit clears it.
@@ -99,7 +115,7 @@ impl PaymentsEditor {
         self.saved_amounts.as_ref() == Some(&self.snapshot())
     }
 
-    fn new(m: &Member, payments: &[Payment], reg_fee: f64) -> Self {
+    fn new(m: &Member, payments: &[Payment]) -> Self {
         let cur_year: i32 = dates::current_month()
             .get(..4)
             .and_then(|s| s.parse().ok())
@@ -110,7 +126,6 @@ impl PaymentsEditor {
             .and_then(|s| s.parse().ok())
             .unwrap_or(cur_year);
         let payments = payments.to_vec();
-        let reg_paid = payments.iter().any(|p| p.category == "registration");
         // Show every year the member has existed for, plus next year so payments
         // can be recorded ahead. Widen to cover any stray out-of-range payment.
         let mut min_year = join_year.min(cur_year);
@@ -129,8 +144,6 @@ impl PaymentsEditor {
             year: cur_year,
             min_year,
             max_year,
-            reg_paid,
-            reg_fee,
             error: None,
             saved_amounts: None,
         }
@@ -168,7 +181,6 @@ impl PaymentsEditor {
 
     fn reload(&mut self, payments: &[Payment]) {
         self.payments = payments.to_vec();
-        self.reg_paid = self.payments.iter().any(|p| p.category == "registration");
         self.entries = Self::build_entries(self.year, &self.payments);
     }
 
@@ -213,45 +225,9 @@ impl PaymentsEditor {
     }
 }
 
-/// Focused first-payment prompt shown right after a NEW member is added: this
-/// month's membership fee plus an optional one-time joining fee, saved together.
-struct NewMemberPrompt {
-    member_id: i64,
-    member_name: String,
-    month: String,
-    month_label: String,
-    fee: String,
-    reg_fee: f64,
-    collect_reg: bool,
-    error: Option<String>,
-}
-
-impl NewMemberPrompt {
-    fn new(m: &Member, repo: &Repository) -> Self {
-        let month = dates::current_month();
-        let month_label = month
-            .get(5..7)
-            .and_then(|s| s.parse::<usize>().ok())
-            .filter(|n| (1..=12).contains(n))
-            .map(|n| format!("{} {}", MONTH_NAMES[n - 1], &month[..4]))
-            .unwrap_or_else(|| month.clone());
-        Self {
-            member_id: m.id,
-            member_name: m.name.clone(),
-            month,
-            month_label,
-            fee: format!("{:.0}", repo.default_monthly_fee()),
-            reg_fee: repo.registration_fee(),
-            collect_reg: true,
-            error: None,
-        }
-    }
-}
-
 enum Dialog {
     None,
     Member(MemberForm),
-    NewMember(NewMemberPrompt),
     Details { member: Member, payments: Vec<Payment> },
     Payments(PaymentsEditor),
 }
@@ -261,39 +237,26 @@ enum MemberFilter {
     All,
     PaidUp,
     Due,
-    RegPaid,
-    RegDue,
 }
 
 impl MemberFilter {
-    const ALL: [MemberFilter; 5] = [
+    const ALL: [MemberFilter; 3] = [
         MemberFilter::All,
         MemberFilter::PaidUp,
         MemberFilter::Due,
-        MemberFilter::RegPaid,
-        MemberFilter::RegDue,
     ];
     fn label(self) -> &'static str {
         match self {
             MemberFilter::All => "All members",
-            MemberFilter::PaidUp => "Paid up",
-            MemberFilter::Due => "Owes payment",
-            MemberFilter::RegPaid => "Joining fee paid",
-            MemberFilter::RegDue => "Joining fee due",
+            MemberFilter::PaidUp => "Paid this month",
+            MemberFilter::Due => "Due",
         }
     }
-    fn matches(
-        self,
-        m: &Member,
-        arrears: &HashMap<i64, (i64, f64)>,
-        reg_missing: &std::collections::HashSet<i64>,
-    ) -> bool {
+    fn matches(self, m: &Member, arrears: &HashMap<i64, (i64, f64)>) -> bool {
         match self {
             MemberFilter::All => true,
             MemberFilter::PaidUp => !arrears.contains_key(&m.id),
             MemberFilter::Due => arrears.contains_key(&m.id),
-            MemberFilter::RegPaid => !reg_missing.contains(&m.id),
-            MemberFilter::RegDue => reg_missing.contains(&m.id),
         }
     }
 }
@@ -304,10 +267,12 @@ pub struct MembersState {
     filter: MemberFilter,
     members: Vec<Member>,
     arrears: HashMap<i64, (i64, f64)>,
-    reg_missing: std::collections::HashSet<i64>,
     loaded: bool,
     dialog: Dialog,
     status: Option<String>,
+    // A member to open the payment book for on the next `show` (set when a
+    // Transactions row is tapped). Deferred because opening needs `repo`.
+    pending_payments: Option<i64>,
 }
 
 impl Default for MembersState {
@@ -318,10 +283,10 @@ impl Default for MembersState {
             filter: MemberFilter::All,
             members: Vec::new(),
             arrears: HashMap::new(),
-            reg_missing: std::collections::HashSet::new(),
             loaded: false,
             dialog: Dialog::None,
             status: None,
+            pending_payments: None,
         }
     }
 }
@@ -335,19 +300,6 @@ fn opt(s: &str) -> Option<String> {
     }
 }
 
-
-
-/// A small rounded pill used for member flags (registration due).
-fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.22))
-        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.55)))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(6, 1))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).color(color).size(12.0));
-        });
-}
 
 impl MembersState {
     /// Drop the cached row set so the next `show()` re-queries the DB.
@@ -365,15 +317,22 @@ impl MembersState {
         self.loaded = false;
     }
 
+    /// Open a specific member's payment book — used when a Transactions payment
+    /// row is tapped. Shows the whole roster so the member is findable behind it.
+    pub fn focus_member(&mut self, id: i64) {
+        self.filter = MemberFilter::All;
+        self.show_inactive = true;
+        self.search.clear();
+        self.loaded = false;
+        self.pending_payments = Some(id);
+    }
+
     /// Indices into `self.members` that pass the current filter. Recomputed at
     /// the point of use because the search box can reload (and shrink) the roster
     /// mid-frame — holding indices across a reload would point past the new list.
     fn visible(&self) -> Vec<usize> {
         (0..self.members.len())
-            .filter(|&i| {
-                self.filter
-                    .matches(&self.members[i], &self.arrears, &self.reg_missing)
-            })
+            .filter(|&i| self.filter.matches(&self.members[i], &self.arrears))
             .collect()
     }
 
@@ -390,12 +349,6 @@ impl MembersState {
         // A member is Due if they owe any month since they joined, not just the
         // current one. `arrears_all` returns only members who owe > 0.
         self.arrears = repo.arrears_all(&month).unwrap_or_default();
-        self.reg_missing = repo
-            .members_missing_registration(false)
-            .unwrap_or_default()
-            .iter()
-            .map(|m| m.id)
-            .collect();
         self.loaded = true;
     }
 
@@ -403,21 +356,23 @@ impl MembersState {
         if !self.loaded {
             self.reload(repo);
         }
+        if let Some(id) = self.pending_payments.take() {
+            self.handle_action(Action::OpenPayment(id), repo);
+        }
 
         ui.horizontal(|ui| {
             ui.heading("Members");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+ Add member").clicked() {
-                    self.dialog = Dialog::Member(MemberForm::new_member());
+                if ui.button("+ New member").clicked() {
+                    self.dialog = Dialog::Member(MemberForm::new_member(repo));
                 }
             });
         });
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("Search:");
             if ui
-                .add(egui::TextEdit::singleline(&mut self.search).hint_text("name or phone"))
+                .add(egui::TextEdit::singleline(&mut self.search).hint_text("Search name or phone"))
                 .changed()
             {
                 self.reload(repo);
@@ -430,7 +385,7 @@ impl MembersState {
                     }
                 });
             if ui
-                .checkbox(&mut self.show_inactive, "Show inactive (quit)")
+                .checkbox(&mut self.show_inactive, "Include past members")
                 .changed()
             {
                 self.reload(repo);
@@ -457,7 +412,7 @@ impl MembersState {
                     ui.label(egui::RichText::new("No members yet.").weak());
                     ui.add_space(6.0);
                     if ui.button("+ Add your first member").clicked() {
-                        self.dialog = Dialog::Member(MemberForm::new_member());
+                        self.dialog = Dialog::Member(MemberForm::new_member(repo));
                     }
                 } else {
                     ui.label(egui::RichText::new("No members match this filter.").weak());
@@ -472,15 +427,13 @@ impl MembersState {
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::auto().at_least(160.0).clip(true)) // name
             .column(Column::auto().at_least(110.0)) // phone
-            .column(Column::auto().at_least(80.0)) // status
-            .column(Column::auto().at_least(140.0)) // flags
+            .column(Column::auto().at_least(90.0)) // status
             .column(Column::auto().at_least(100.0)) // join
             .column(Column::remainder().at_least(220.0)) // actions
             .header(30.0, |mut h| {
                 h.col(|ui| { ui.strong("Name"); });
                 h.col(|ui| { ui.strong("Phone"); });
                 h.col(|ui| { ui.strong("Status"); });
-                h.col(|ui| { ui.strong("Flags"); });
                 h.col(|ui| { ui.strong("Joined"); });
                 h.col(|ui| { ui.strong("Actions"); });
             })
@@ -505,7 +458,7 @@ impl MembersState {
                                 let behind =
                                     self.arrears.get(&m.id).map(|(n, _)| *n).unwrap_or(0);
                                 let label = if behind >= 2 {
-                                    format!("Due · {behind}m")
+                                    format!("{behind} months behind")
                                 } else {
                                     "Due".to_string()
                                 };
@@ -517,18 +470,13 @@ impl MembersState {
                                 ui.colored_label(color, label);
                             }
                             MemberStatus::Inactive => {
-                                ui.colored_label(egui::Color32::GRAY, "Inactive");
+                                ui.colored_label(egui::Color32::GRAY, "Past member");
                             }
-                        }
-                    });
-                    row.col(|ui| {
-                        if self.reg_missing.contains(&m.id) {
-                            badge(ui, "Reg due", egui::Color32::from_rgb(200, 110, 50));
                         }
                     });
                     row.col(|ui| { ui.label(&m.join_date); });
                     row.col(|ui| {
-                        if m.active && ui.button("Record payment").clicked() {
+                        if m.active && ui.button("Payments").clicked() {
                             action = Some(Action::OpenPayment(m.id));
                         }
                         ui.menu_button("⋯", |ui| {
@@ -540,7 +488,7 @@ impl MembersState {
                                 action = Some(Action::Edit(m.id));
                                 ui.close();
                             }
-                            let toggle = if m.active { "Deactivate" } else { "Reactivate" };
+                            let toggle = if m.active { "Mark as left" } else { "Mark as active" };
                             if ui.button(toggle).clicked() {
                                 action = Some(Action::ToggleActive(m.id, !m.active));
                                 ui.close();
@@ -564,8 +512,7 @@ impl MembersState {
             Action::OpenPayment(id) => {
                 if let Ok(Some(m)) = repo.get_member(id) {
                     let payments = repo.payments_for_member(id).unwrap_or_default();
-                    let reg_fee = repo.registration_fee();
-                    self.dialog = Dialog::Payments(PaymentsEditor::new(&m, &payments, reg_fee));
+                    self.dialog = Dialog::Payments(PaymentsEditor::new(&m, &payments));
                 }
             }
             Action::Edit(id) => {
@@ -596,7 +543,6 @@ impl MembersState {
         currency: &str,
     ) {
         let mut close = false;
-        let mut new_member_for: Option<i64> = None;
         let mut status_update: Option<Option<String>> = None;
         match &mut self.dialog {
             Dialog::None => {}
@@ -608,24 +554,53 @@ impl MembersState {
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
                         egui::Grid::new("member_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                            ui.label("Name *");
+                            ui.label("Full name");
                             ui.text_edit_singleline(&mut form.name);
                             ui.end_row();
                             ui.label("Phone");
                             ui.text_edit_singleline(&mut form.phone);
                             ui.end_row();
-                            ui.label("Join date");
+                            ui.label("Joined on");
                             crate::ui::date_edit(ui, &mut form.join_date);
                             ui.end_row();
                             ui.label("Notes");
                             ui.text_edit_multiline(&mut form.notes);
                             ui.end_row();
+                            if !form.editing {
+                                ui.label("Joining fee");
+                                ui.add(egui::TextEdit::singleline(&mut form.joining_fee).desired_width(100.0));
+                                ui.end_row();
+                                ui.label(format!("This month ({})", month_label(&form.month)));
+                                ui.add(egui::TextEdit::singleline(&mut form.month_fee).desired_width(100.0));
+                                ui.end_row();
+                            }
                         });
                         ui.add_space(6.0);
                         let name_ok = !form.name.trim().is_empty();
                         let date_ok = form.join_date.trim().is_empty()
                             || dates::is_valid_date(&form.join_date);
-                        let valid = name_ok && date_ok;
+                        // Joining fee is mandatory for a new member: it must be a
+                        // number (0 = a deliberate, logged waiver). All values are
+                        // owned so nothing borrows `form` across the Save closure.
+                        let joining_amt = form.joining_fee.trim().parse::<f64>().ok();
+                        let month_empty = form.month_fee.trim().is_empty();
+                        let month_amt = form.month_fee.trim().parse::<f64>().ok();
+                        let fee_ok = form.editing
+                            || (joining_amt.is_some() && (month_empty || month_amt.is_some()));
+                        let valid = name_ok && date_ok && fee_ok;
+                        let first = if month_empty { None } else { month_amt.filter(|v| *v > 0.0) };
+                        let joining = joining_amt.unwrap_or(0.0);
+                        if !form.editing {
+                            let collecting = joining + first.unwrap_or(0.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Collecting {} today",
+                                    crate::ui::money(currency, collecting)
+                                ))
+                                .strong(),
+                            );
+                            ui.add_space(4.0);
+                        }
                         ui.horizontal(|ui| {
                             if ui.add_enabled(valid, egui::Button::new("Save")).clicked() {
                                 let m = form.to_member();
@@ -635,10 +610,8 @@ impl MembersState {
                                         Err(e) => form.error = Some(format!("Save failed: {e}")),
                                     }
                                 } else {
-                                    match repo.insert_member(&m) {
-                                        Ok(id) => {
-                                            new_member_for = Some(id);
-                                        }
+                                    match repo.create_member(&m, joining, first, &form.month, &dates::today()) {
+                                        Ok(_) => close = true,
                                         Err(e) => form.error = Some(format!("Save failed: {e}")),
                                     }
                                 }
@@ -650,6 +623,8 @@ impl MembersState {
                                 ui.colored_label(egui::Color32::from_rgb(210, 120, 40), "Name required");
                             } else if !date_ok {
                                 ui.colored_label(egui::Color32::from_rgb(210, 120, 40), "Date must be YYYY-MM-DD");
+                            } else if !fee_ok {
+                                ui.colored_label(egui::Color32::from_rgb(210, 120, 40), "Fees must be numbers");
                             }
                         });
                         if let Some(err) = &form.error {
@@ -689,18 +664,21 @@ impl MembersState {
                                 ui.end_row();
                                 ui.label(egui::RichText::new("Status").weak());
                                 let (txt, color) = match status {
-                                    MemberStatus::Paid => ("Paid (this month)", egui::Color32::from_rgb(40, 170, 90)),
-                                    MemberStatus::Due => ("Due (this month)", egui::Color32::from_rgb(210, 120, 40)),
-                                    MemberStatus::Inactive => ("Inactive", egui::Color32::GRAY),
+                                    MemberStatus::Paid => ("Paid this month", egui::Color32::from_rgb(40, 170, 90)),
+                                    MemberStatus::Due => ("Due this month", egui::Color32::from_rgb(210, 120, 40)),
+                                    MemberStatus::Inactive => ("Past member", egui::Color32::GRAY),
                                 };
                                 ui.colored_label(color, txt);
                                 ui.end_row();
-                                ui.label(egui::RichText::new("Reg. fee").weak());
-                                let reg_paid = payments.iter().any(|p| p.category == "registration");
-                                ui.label(if reg_paid { "Paid" } else { "Due" });
+                                ui.label(egui::RichText::new("Joining fee").weak());
+                                let reg = payments.iter().find(|p| p.category == "registration");
+                                ui.label(match reg {
+                                    Some(p) => format!("{} · {}", crate::ui::money(currency, p.amount), p.date),
+                                    None => "—".to_string(),
+                                });
                                 ui.end_row();
                                 ui.label(egui::RichText::new("Total paid").weak());
-                                ui.label(format!("{} {:.0}", currency, total_paid));
+                                ui.label(crate::ui::money(currency, total_paid));
                                 ui.end_row();
                                 ui.label(egui::RichText::new("Notes").weak());
                                 ui.label(m.notes.as_deref().unwrap_or("—"));
@@ -733,7 +711,7 @@ impl MembersState {
                                             ui.label(&p.date);
                                             ui.label(&p.period_month);
                                             ui.label(crate::core::models::category_label(&p.category));
-                                            ui.label(format!("{} {:.0}", currency, p.amount));
+                                            ui.label(crate::ui::money(currency, p.amount));
                                             ui.end_row();
                                         }
                                     });
@@ -746,112 +724,15 @@ impl MembersState {
                         }
                     });
             }
-            Dialog::NewMember(p) => {
-                egui::Window::new(format!("First payment — {}", p.member_name))
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .show(ctx, |ui| {
-                        ui.set_min_width(320.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Record their first payment now, or skip and do it later.",
-                            )
-                            .weak(),
-                        );
-                        ui.add_space(8.0);
-                        egui::Grid::new("new_member_pay")
-                            .num_columns(2)
-                            .spacing([10.0, 8.0])
-                            .show(ui, |ui| {
-                                ui.label(format!("{} fee", p.month_label));
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut p.fee).desired_width(100.0),
-                                );
-                                ui.end_row();
-                                ui.label("Joining fee");
-                                ui.checkbox(
-                                    &mut p.collect_reg,
-                                    format!("Collect {} {:.0}", currency, p.reg_fee),
-                                );
-                                ui.end_row();
-                            });
-                        ui.add_space(8.0);
-                        let fee_ok = p.fee.trim().is_empty() || p.fee.trim().parse::<f64>().is_ok();
-                        ui.horizontal(|ui| {
-                            if ui.add_enabled(fee_ok, egui::Button::new("Save")).clicked() {
-                                let mut result = Ok(());
-                                if let Some(amt) =
-                                    p.fee.trim().parse::<f64>().ok().filter(|v| *v > 0.0)
-                                {
-                                    result = repo
-                                        .insert_payment(&Payment {
-                                            id: 0,
-                                            member_id: p.member_id,
-                                            period_month: p.month.clone(),
-                                            amount: amt,
-                                            date: dates::today(),
-                                            note: None,
-                                            category: "membership".to_string(),
-                                        })
-                                        .map(|_| ());
-                                }
-                                if result.is_ok() && p.collect_reg {
-                                    let today = dates::today();
-                                    result = repo.ensure_registration_payment(
-                                        p.member_id,
-                                        p.reg_fee,
-                                        &today,
-                                        &p.month,
-                                    );
-                                }
-                                match result {
-                                    Ok(()) => close = true,
-                                    Err(e) => p.error = Some(format!("Couldn't save — {e}")),
-                                }
-                            }
-                            if ui.button("Skip").clicked() {
-                                close = true;
-                            }
-                            if !fee_ok {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(210, 120, 40),
-                                    "Amount must be a number",
-                                );
-                            }
-                        });
-                        if let Some(err) = &p.error {
-                            ui.add_space(4.0);
-                            ui.colored_label(egui::Color32::from_rgb(210, 90, 90), err);
-                        }
-                    });
-            }
             Dialog::Payments(ed) => {
                 let mut save = false;
                 let mut new_year = ed.year;
-                let mut toggle_reg: Option<bool> = None;
                 egui::Window::new(format!("Payments — {}", ed.member_name))
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
                         ui.set_min_width(340.0);
-                        ui.horizontal(|ui| {
-                            let mut checked = ed.reg_paid;
-                            if ui
-                                .checkbox(
-                                    &mut checked,
-                                    format!(
-                                        "Joining fee collected ({currency} {:.0})",
-                                        ed.reg_fee
-                                    ),
-                                )
-                                .changed()
-                            {
-                                toggle_reg = Some(checked);
-                            }
-                        });
-                        ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Year").strong());
                             egui::ComboBox::from_id_salt("pay_year")
@@ -876,7 +757,7 @@ impl MembersState {
                                 },
                             );
                         });
-                        ui.weak("Enter the amount in the month you received it. For a prepayment, mark the other months Covered - no need to split the money.");
+                        ui.weak("Enter the amount in the month you received it. Paid a few months up front? Mark those months Paid ahead - no need to split the money.");
                         ui.add_space(8.0);
                         let invalid = ed.entries.iter().any(|e| {
                             let t = e.amount.trim();
@@ -907,7 +788,7 @@ impl MembersState {
                                                 if ui
                                                     .add(
                                                         egui::Button::new(
-                                                            egui::RichText::new("Covered")
+                                                            egui::RichText::new("Paid ahead")
                                                                 .color(egui::Color32::from_rgb(
                                                                     90, 150, 210,
                                                                 ))
@@ -915,7 +796,7 @@ impl MembersState {
                                                         )
                                                         .small(),
                                                     )
-                                                    .on_hover_text("Prepaid or comped - no money this month. Click to mark Due.")
+                                                    .on_hover_text("Paid ahead or comped - no money this month. Click to mark Due.")
                                                     .clicked()
                                                 {
                                                     e.covered = false;
@@ -931,7 +812,7 @@ impl MembersState {
                                                     )
                                                     .small(),
                                                 )
-                                                .on_hover_text("Settled without money (e.g. covered by a prepayment)? Click to mark Covered.")
+                                                .on_hover_text("Settled without money (e.g. paid ahead earlier)? Click to mark Paid ahead.")
                                                 .clicked()
                                             {
                                                 e.covered = true;
@@ -959,7 +840,7 @@ impl MembersState {
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             if ui
-                                .add_enabled(!invalid, egui::Button::new("Save changes"))
+                                .add_enabled(!invalid, egui::Button::new("Save"))
                                 .clicked()
                             {
                                 save = true;
@@ -1002,25 +883,6 @@ impl MembersState {
                         }
                     }
                 }
-                if let Some(now) = toggle_reg {
-                    let r = if now {
-                        let today = dates::today();
-                        let month = dates::current_month();
-                        repo.ensure_registration_payment(ed.member_id, ed.reg_fee, &today, &month)
-                    } else {
-                        repo.remove_registration_payment(ed.member_id)
-                    };
-                    match r {
-                        Ok(()) => {
-                            let payments =
-                                repo.payments_for_member(ed.member_id).unwrap_or_default();
-                            ed.reload(&payments);
-                            status_update = Some(None);
-                            ed.saved_amounts = None;
-                        }
-                        Err(e) => ed.error = Some(format!("Couldn't update joining fee — {e}")),
-                    }
-                }
                 if save {
                     match ed.commit(repo) {
                         Ok(()) => {
@@ -1041,12 +903,7 @@ impl MembersState {
             self.status = u;
         }
 
-        if let Some(id) = new_member_for {
-            if let Ok(Some(m)) = repo.get_member(id) {
-                self.dialog = Dialog::NewMember(NewMemberPrompt::new(&m, repo));
-            }
-            self.reload(repo);
-        } else if close {
+        if close {
             self.dialog = Dialog::None;
             self.reload(repo);
         }

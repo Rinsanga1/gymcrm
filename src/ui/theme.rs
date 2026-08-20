@@ -3,9 +3,6 @@ use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, Text
 /// Linear-inspired accent (indigo). Used for focus / selection highlight only.
 pub const ACCENT: Color32 = Color32::from_rgb(94, 106, 210);
 
-/// Roche Fitness Gym brand bronze, lifted from the logo and warmed for contrast.
-pub const BRONZE: Color32 = Color32::from_rgb(200, 144, 78);
-
 /// Money/status semantics. Money is money in any theme, so these stay fixed
 /// across light and dark rather than shifting with the palette.
 pub const POSITIVE: Color32 = Color32::from_rgb(45, 170, 95);
@@ -16,15 +13,12 @@ pub const WARNING: Color32 = Color32::from_rgb(215, 135, 45);
 pub enum Mode {
     Light,
     Dark,
-    Gray,
 }
 
 impl Mode {
     pub fn from_str(s: &str) -> Mode {
         if s.eq_ignore_ascii_case("light") {
             Mode::Light
-        } else if s.eq_ignore_ascii_case("gray") {
-            Mode::Gray
         } else {
             Mode::Dark
         }
@@ -33,7 +27,6 @@ impl Mode {
         match self {
             Mode::Light => "light",
             Mode::Dark => "dark",
-            Mode::Gray => "gray",
         }
     }
 }
@@ -93,31 +86,11 @@ fn dark() -> Palette {
     }
 }
 
-fn gray() -> Palette {
-    Palette {
-        dark_mode: true,
-        main: Color32::from_rgb(30, 32, 36),
-        sidebar: Color32::from_rgb(26, 28, 31),
-        card: Color32::from_rgb(35, 37, 41),
-        faint: Color32::from_rgb(28, 30, 34),
-        border: Color32::from_rgb(46, 49, 54),
-        border_strong: Color32::from_rgb(60, 63, 69),
-        text: Color32::from_rgb(224, 221, 216),
-        text_muted: Color32::from_rgb(146, 152, 160),
-        btn: Color32::from_rgb(40, 43, 48),
-        btn_hover: Color32::from_rgb(49, 52, 58),
-        btn_active: Color32::from_rgb(58, 61, 68),
-        nav_selected: Color32::from_rgb(47, 50, 56),
-        accent: BRONZE,
-    }
-}
-
 /// Apply the theme to the whole context. Idempotent.
 pub fn apply(ctx: &egui::Context, mode: Mode) {
     let p = match mode {
         Mode::Light => light(),
         Mode::Dark => dark(),
-        Mode::Gray => gray(),
     };
     let mut style = (*ctx.global_style()).clone();
 
@@ -209,7 +182,6 @@ fn current_palette(ctx: &egui::Context) -> Palette {
     match mode {
         Mode::Light => light(),
         Mode::Dark => dark(),
-        Mode::Gray => gray(),
     }
 }
 
