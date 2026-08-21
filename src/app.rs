@@ -66,7 +66,7 @@ impl App {
             .get_setting("gym_name")
             .ok()
             .flatten()
-            .unwrap_or_else(|| "RocheCRM".to_string());
+            .unwrap_or_else(|| "TenneCRM".to_string());
 
         let mode = crate::ui::theme::Mode::from_str(
             &repo.get_setting("theme").ok().flatten().unwrap_or_default(),
@@ -92,7 +92,7 @@ impl App {
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("RocheCRM").size(16.0).strong());
+            ui.label(egui::RichText::new("TenneCRM").size(16.0).strong());
         });
         ui.horizontal(|ui| {
             ui.add_space(4.0);
@@ -115,7 +115,7 @@ impl App {
                     .get_setting("gym_name")
                     .ok()
                     .flatten()
-                    .unwrap_or_else(|| "RocheCRM".into());
+                    .unwrap_or_else(|| "TenneCRM".into());
             }
             ui.add_space(2.0);
         }
@@ -137,7 +137,7 @@ fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
         (egui::Color32::TRANSPARENT, muted)
     };
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, egui::CornerRadius::same(7), bg);
+    painter.rect_filled(rect, egui::CornerRadius::same(0), bg);
     painter.text(
         rect.left_center() + egui::vec2(12.0, 0.0),
         egui::Align2::LEFT_CENTER,

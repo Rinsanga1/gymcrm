@@ -8,10 +8,10 @@ pub fn db_path() -> PathBuf {
         if let Some(dir) = exe.parent() {
             // In `cargo run`, the exe lives under target/debug — that's still a
             // real, writable folder, so portability holds in dev too.
-            return dir.join("roche.db");
+            return dir.join("tenne.db");
         }
     }
-    PathBuf::from("roche.db")
+    PathBuf::from("tenne.db")
 }
 
 /// Open (creating if needed) the SQLite database at `path` and run migrations.

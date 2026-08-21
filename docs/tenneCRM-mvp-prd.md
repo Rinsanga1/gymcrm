@@ -1,9 +1,9 @@
-# RocheCRM — MVP PRD
+# TenneCRM — MVP PRD
 
 > Owner: dev@mustbesocial.com
 > Status: MVP scope · v1
 > Last updated: 2026-06-25
-> Companion to the full vision doc: [rocheCRM-prd.md](rocheCRM-prd.md)
+> Companion to the full vision doc: [tenneCRM-prd.md](tenneCRM-prd.md)
 
 ---
 
@@ -33,7 +33,7 @@ double-click, start using. All data is local, offline, in one database file.
 ## 3. Problem
 
 Membership and merchandise money currently gets lost across notebooks, memory,
-and WhatsApp. RocheCRM gives one place to record **who paid, how much, what they
+and WhatsApp. TenneCRM gives one place to record **who paid, how much, what they
 bought, and what's still owed** — plus a clear view of earnings.
 
 ---
@@ -174,7 +174,7 @@ searching**, export everything **anytime**.
   Due in month one).
 - **CSV export** for members, payments, sales, expenses — usable for external
   accounting.
-- **Automatic local backups:** on app close, silently copy `roche.db` into a
+- **Automatic local backups:** on app close, silently copy `tenne.db` into a
   `backups/` folder (timestamped), keeping the last ~7. Protects the single
   portable file against corruption / accidental deletion.
 - One-click manual **backup/restore** in addition to the automatic ones.
@@ -213,7 +213,7 @@ searching**, export everything **anytime**.
 | **UI rendering** | **Virtualized tables** (render only visible rows) — never draw all members at once. |
 | **Search/filter** | Done at the **DB level with indexes**, not by scanning in memory. |
 | **Data safety** | Transactional writes; **automatic timestamped backups (last ~7) on close** + manual backup/restore + CSV export; no silent loss. |
-| **Storage** | **Portable:** one SQLite `roche.db` file **next to the `.exe`** (carry on USB). Fall back to `%APPDATA%` only if a write-blocked location forces it later. |
+| **Storage** | **Portable:** one SQLite `tenne.db` file **next to the `.exe`** (carry on USB). Fall back to `%APPDATA%` only if a write-blocked location forces it later. |
 | **Privacy** | No accounts, no telemetry, no network by default. |
 
 ---
@@ -299,7 +299,7 @@ The MVP is done when the owner can:
 - **Merch sales are anonymous** (no member link in MVP).
 - Behavior goal: **double-click the `.exe` and use it immediately**, Timeline-CRM
   style — no setup screen, no config.
-- **Storage = portable (Option B):** `roche.db` lives next to the `.exe` so the
+- **Storage = portable (Option B):** `tenne.db` lives next to the `.exe` so the
   whole thing carries on a USB stick. Accepted risk: if the `.exe` is run from a
   write-blocked folder (e.g. `Program Files`), writes fail — we'll switch to
   `%APPDATA%` then. Not solving that in MVP.

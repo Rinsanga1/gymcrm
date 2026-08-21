@@ -1,4 +1,4 @@
-# RocheCRM — Audit Implementation Plan
+# TenneCRM — Audit Implementation Plan
 
 Gym-manager app (Rust + egui). Implementing the approved findings from the
 Fried / Singer / DHH audit. Skipped: #7 (nav regrouping).
@@ -11,7 +11,7 @@ Fried / Singer / DHH audit. Skipped: #7 (nav regrouping).
   SC=/c/Users/katto/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained
   cp libshlwapi.a "$SC/"; cargo test 2>&1 | grep -E 'test result|FAILED'; cargo build 2>&1 | tail -3; rm -f "$SC/libshlwapi.a"
   ```
-- Building fails with "Access is denied" if `roche_crm.exe` is running — check `tasklist | grep -i roche`; if running, skip the build step (compile + test are enough to verify).
+- Building fails with "Access is denied" if `tenne_crm.exe` is running — check `tasklist | grep -i tenne`; if running, skip the build step (compile + test are enough to verify).
 - Keep the build green at the end of every iteration. Never leave it broken.
 
 ## Code map (grounded)

@@ -1,4 +1,4 @@
-# RocheCRM — Product Requirements Document (PRD)
+# TenneCRM — Product Requirements Document (PRD)
 
 > Owner: dev@mustbesocial.com
 > Status: Draft v1
@@ -8,7 +8,7 @@
 
 ## 1. Summary
 
-RocheCRM is a **Windows-native desktop CRM for gym owners**, inspired by the
+TenneCRM is a **Windows-native desktop CRM for gym owners**, inspired by the
 layout and feature set of Timeline CRM (sidebar navigation + dashboard with KPI
 cards and charts) but purpose-built for running a gym instead of generic B2B
 sales.
@@ -71,7 +71,7 @@ a local database file on the owner's machine.
 
 ## 4. Product Overview & Navigation
 
-Mirror the reference layout: a **dark left sidebar** with the RocheCRM logo, a
+Mirror the reference layout: a **dark left sidebar** with the TenneCRM logo, a
 list of modules, and an account block at the bottom; a **light main content
 area** with a page title, filter chips (All Time / Today / This Week / This
 Month / This Quarter / This Year / Custom), KPI cards, and charts.
@@ -178,7 +178,7 @@ Month / This Quarter / This Year / Custom), KPI cards, and charts.
 | **Footprint** | App + DB file only. Target startup < 1s, idle RAM < 150 MB. |
 | **Offline** | 100% functional with no internet. |
 | **Data safety** | Local DB with automatic periodic backups + manual backup/restore. No silent data loss. |
-| **Persistence** | Data stored in a single file under `%APPDATA%\RocheCRM\` (or next to the exe in portable mode). |
+| **Persistence** | Data stored in a single file under `%APPDATA%\TenneCRM\` (or next to the exe in portable mode). |
 | **Privacy** | No telemetry, no accounts, no data leaves the device by default. |
 | **Platform** | Windows 10 & 11 (x64). |
 | **Resilience** | Survive force-close without corrupting data (transactional writes). |
@@ -316,5 +316,5 @@ Rationale for a solo build + single-exe goal:
    in `%APPDATA%`? (Recommend offering both.)
 4. **Receipts:** needed in MVP or Phase 3?
 5. **Multiple gyms / branches:** ever needed, or strictly one location?
-6. **Branding:** logo and color palette for RocheCRM (the reference uses a
+6. **Branding:** logo and color palette for TenneCRM (the reference uses a
    blue/dark-navy theme).

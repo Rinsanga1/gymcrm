@@ -1,7 +1,7 @@
-# RocheCRM — Implementation Plan (Ralph Loop)
+# TenneCRM — Implementation Plan (Ralph Loop)
 
 > Drives an iterative build loop. Companion to
-> [rocheCRM-mvp-prd.md](rocheCRM-mvp-prd.md). Work top-to-bottom; each milestone
+> [tenneCRM-mvp-prd.md](tenneCRM-mvp-prd.md). Work top-to-bottom; each milestone
 > is a vertical slice that compiles and runs.
 
 Brief: a Windows-native gym CRM in **Rust + egui/eframe**, shipping as one
@@ -11,7 +11,7 @@ merchandise sales, and expenses, with an earnings dashboard.
 ## Goals
 - Single self-contained `.exe` (`x86_64-pc-windows-gnu` — GNU toolchain, no
   Visual Studio needed), no installer/runtime.
-- Portable: `roche.db` lives next to the `.exe`; auto-backups in `backups/`.
+- Portable: `tenne.db` lives next to the `.exe`; auto-backups in `backups/`.
 - Replace the owner's Google Sheet: import members, track monthly dues.
 - Smooth at 5,000+ members (virtualized tables, indexed queries).
 - Every iteration leaves the app **compiling and runnable** (`cargo run`).
@@ -38,13 +38,13 @@ merchandise sales, and expenses, with an earnings dashboard.
 ## Milestones & Checklist
 
 ### M0 — Skeleton (compiles, window opens)
-- [ ] `cargo init` binary crate `roche_crm`; add deps above; commit `Cargo.toml`.
-- [ ] eframe app boots: 1100x720 window titled "RocheCRM", dark theme.
+- [ ] `cargo init` binary crate `tenne_crm`; add deps above; commit `Cargo.toml`.
+- [ ] eframe app boots: 1100x720 window titled "TenneCRM", dark theme.
 - [ ] Left **sidebar** with logo text + nav items (Dashboard, Members,
       Merchandise, Expenses, Settings) and a selected-state; main panel switches
       view on click via an `enum View`.
 - [ ] Resolve DB path **next to the `.exe`** (`std::env::current_exe`), fall back
-      to CWD in `cargo run`. Open/create `roche.db`.
+      to CWD in `cargo run`. Open/create `tenne.db`.
 - [ ] Run schema migration on startup (all tables, empty). App runs with empty
       DB without panicking.
 
@@ -100,7 +100,7 @@ merchandise sales, and expenses, with an earnings dashboard.
 - [ ] **CSV import** (members): file picker → column-mapping (Name, Phone) →
       bulk insert. Payment history NOT imported (fresh tracking).
 - [ ] **CSV export** for members, payments, sales, expenses.
-- [ ] **Auto-backup on app close:** copy `roche.db` → `backups/roche_<ts>.db`,
+- [ ] **Auto-backup on app close:** copy `tenne.db` → `backups/tenne_<ts>.db`,
       keep last 7. Manual "Backup now" + "Restore" buttons.
 
 ### M7 — Release packaging

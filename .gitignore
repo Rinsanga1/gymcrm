@@ -12,12 +12,12 @@
 backups/
 
 # Compiled binaries copied next to the repo for manual testing
-roche_crm.exe
+tenne_crm.exe
 
 # Ad-hoc portable test folders
 /portable/
 /potrable2/
-/RocheCRM/
+/TenneCRM/
 
 # Ralph loop scratch state (the checklist itself is tracked)
 .ralph/*.state.json

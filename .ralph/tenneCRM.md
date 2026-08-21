@@ -1,12 +1,12 @@
-# RocheCRM — Build (Ralph Loop)
+# TenneCRM — Build (Ralph Loop)
 
-Windows-native gym CRM in Rust + egui/eframe, shipping as one portable .exe with a local SQLite DB beside it. Full spec: docs/rocheCRM-mvp-prd.md. Detailed plan: docs/rocheCRM-implementation-plan.md.
+Windows-native gym CRM in Rust + egui/eframe, shipping as one portable .exe with a local SQLite DB beside it. Full spec: docs/tenneCRM-mvp-prd.md. Detailed plan: docs/tenneCRM-implementation-plan.md.
 
 Shell note: cargo is at C:\Users\katto\.cargo\bin (not on global PATH). Start every shell with: export PATH="$PATH:/c/Users/katto/.cargo/bin". Toolchain: stable x86_64-pc-windows-gnu (no Visual Studio).
 
 ## Goals
 - Single self-contained .exe (GNU toolchain), no installer/runtime.
-- Portable: roche.db beside the .exe; auto-backups in backups/.
+- Portable: tenne.db beside the .exe; auto-backups in backups/.
 - Replace a Google Sheet: import members, track monthly dues.
 - Smooth at 5,000+ members (virtualized tables, indexed queries).
 - Every iteration leaves the app compiling and runnable.
@@ -23,10 +23,10 @@ Shell note: cargo is at C:\Users\katto\.cargo\bin (not on global PATH). Start ev
 ## Checklist
 
 ### M0 — Skeleton  ✅ COMPLETE
-- [x] Cargo project roche_crm (lib + bin); deps added (eframe/egui/egui_extras/egui_plot 0.34, rusqlite 0.40 bundled, serde, chrono, csv, rfd).
-- [x] eframe app boots: 1100x720 window "RocheCRM", dark theme.
+- [x] Cargo project tenne_crm (lib + bin); deps added (eframe/egui/egui_extras/egui_plot 0.34, rusqlite 0.40 bundled, serde, chrono, csv, rfd).
+- [x] eframe app boots: 1100x720 window "TenneCRM", dark theme.
 - [x] Sidebar nav (Dashboard, Members, Merchandise, Expenses, Settings) with selected state; main panel switches via enum View (src/app.rs).
-- [x] DB path next to .exe (current_exe), CWD fallback; open/create roche.db (src/core/db.rs).
+- [x] DB path next to .exe (current_exe), CWD fallback; open/create tenne.db (src/core/db.rs).
 - [x] Schema migration runs on startup; app runs with empty DB, no panic.
 
 ### M1 — Data layer (tested)  ✅ COMPLETE
@@ -66,12 +66,12 @@ Shell note: cargo is at C:\Users\katto\.cargo\bin (not on global PATH). Start ev
 - [x] Settings: edit gym name, default_monthly_fee, currency; Save writes to settings table with conflict-update.
 - [x] CSV import (members): rfd file picker → case-insensitive Name/Phone column match → transactional bulk insert; reports imported/skipped counts.
 - [x] CSV export: members, payments (joined with member name), sales (one row per line item), expenses. Each writes via `csv::Writer` and reports row count.
-- [x] Auto-backup on close: `App::on_exit` checkpoints WAL + copies roche.db → backups/roche_<YYYYMMDD-HHMMSS>.db; prune keeps last 7. Settings has "Backup now" + a backup list + Restore-from-file (queued via `roche.db.pending-restore`, applied on next startup so we don't fight the live connection).
+- [x] Auto-backup on close: `App::on_exit` checkpoints WAL + copies tenne.db → backups/tenne_<YYYYMMDD-HHMMSS>.db; prune keeps last 7. Settings has "Backup now" + a backup list + Restore-from-file (queued via `tenne.db.pending-restore`, applied on next startup so we don't fight the live connection).
 
 ### M7 — Release
 - [ ] App icon + version metadata (winresource); window/taskbar icon. **Deferred:** `winresource` is not in the offline crates cache and network to crates.io is flaky per the toolchain notes; needs a connected build to land. Window title is set correctly via `ViewportBuilder::with_title`.
-- [x] `cargo build --release --offline` → **single 13 MB `target/release/roche_crm.exe`** (statically links rusqlite; no runtime deps).
-- [x] Clean-folder test: copied just the .exe to a fresh empty dir, launched twice. First run created `roche.db` + WAL + SHM next to the .exe. Verified DB persistence + settings seed + payment-status derivation by inserting a member + payment via a one-shot `roche_crm::core::Repository` smoke binary against the same DB file; member count went 1 → 2 across runs, `is_paid` returned true.
+- [x] `cargo build --release --offline` → **single 13 MB `target/release/tenne_crm.exe`** (statically links rusqlite; no runtime deps).
+- [x] Clean-folder test: copied just the .exe to a fresh empty dir, launched twice. First run created `tenne.db` + WAL + SHM next to the .exe. Verified DB persistence + settings seed + payment-status derivation by inserting a member + payment via a one-shot `tenne_crm::core::Repository` smoke binary against the same DB file; member count went 1 → 2 across runs, `is_paid` returned true.
 - [x] README written (download/run, data location, restore flow, build-from-source notes).
 
 ## Verification
@@ -88,7 +88,7 @@ Shell note: cargo is at C:\Users\katto\.cargo\bin (not on global PATH). Start ev
 
 ### M0 verification
 - `cargo build --offline` → Finished, **0 warnings**.
-- Timed run created `target/debug/roche.db` + WAL (migrations + seed ran). App
+- Timed run created `target/debug/tenne.db` + WAL (migrations + seed ran). App
   window opened without panic.
 
 ### M1 verification
@@ -129,8 +129,8 @@ Shell note: cargo is at C:\Users\katto\.cargo\bin (not on global PATH). Start ev
 - eframe's `on_exit` is the no-arg variant in our build (no glow feature on this dep config) — fixed the signature.
 
 ### M7 verification
-- `cargo build --release --offline` → Finished in 6m11s; binary at `target/release/roche_crm.exe` is **13 MB**.
-- Portable smoke test: copied only the .exe to a clean folder, ran twice; `roche.db` materialised next to it on first launch; member-insert via the lib persisted to the second run.
+- `cargo build --release --offline` → Finished in 6m11s; binary at `target/release/tenne_crm.exe` is **13 MB**.
+- Portable smoke test: copied only the .exe to a clean folder, ran twice; `tenne.db` materialised next to it on first launch; member-insert via the lib persisted to the second run.
 - README.md added at the repo root.
 - Outstanding for v1.1: icon + winresource version metadata (offline cache miss).
 

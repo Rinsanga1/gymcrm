@@ -1,11 +1,11 @@
 [package]
-name = "roche_crm"
+name = "tenne_crm"
 version = "0.1.0"
 edition = "2021"
-description = "RocheCRM - gym CRM for Windows"
+description = "TenneCRM - gym CRM for Windows"
 
 [[bin]]
-name = "roche_crm"
+name = "tenne_crm"
 path = "src/main.rs"
 
 [dependencies]

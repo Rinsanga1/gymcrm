@@ -2,16 +2,16 @@
 //! the dashboard has something to show. Reuses the app's own repo, so the data
 //! is inserted exactly the way the UI would insert it.
 //!
-//!   cargo run --example seed                       # seeds target/debug/roche.db
-//!   cargo run --example seed -- path/to/roche.db   # seeds a specific file
+//!   cargo run --example seed                       # seeds target/debug/tenne.db
+//!   cargo run --example seed -- path/to/tenne.db   # seeds a specific file
 //!
 //! Re-running wipes the tables first, so it's idempotent.
 
 use chrono::{Datelike, Local, Months, NaiveDate};
 
-use roche_crm::core::db;
-use roche_crm::core::models::{Expense, Member, Payment, Product};
-use roche_crm::core::Repository;
+use tenne_crm::core::db;
+use tenne_crm::core::models::{Expense, Member, Payment, Product};
+use tenne_crm::core::Repository;
 
 /// Tiny deterministic PRNG (LCG) so a reseed reproduces the same gym — no rand
 /// dependency for a throwaway script.
@@ -55,7 +55,7 @@ fn main() -> rusqlite::Result<()> {
     let path = std::env::args()
         .nth(1)
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new("target/debug/roche.db").to_path_buf());
+        .unwrap_or_else(|| std::path::Path::new("target/debug/tenne.db").to_path_buf());
 
     let conn = db::open_db(&path)?;
     conn.execute_batch(
@@ -64,7 +64,7 @@ fn main() -> rusqlite::Result<()> {
          DELETE FROM recurring_expenses;",
     )?;
     let mut repo = Repository::new(conn);
-    repo.set_setting("gym_name", "Roche Fitness")?;
+    repo.set_setting("gym_name", "Tenne Fitness")?;
 
     let mut rng = Rng(0x5eed_1234);
     let today = Local::now().date_naive();
@@ -246,7 +246,7 @@ fn main() -> rusqlite::Result<()> {
         ("Water", 1200.0),
         ("Internet", 3000.0),
     ] {
-        repo.insert_recurring_expense(&roche_crm::core::models::RecurringExpense {
+        repo.insert_recurring_expense(&tenne_crm::core::models::RecurringExpense {
             id: 0,
             name: name.into(),
             amount,

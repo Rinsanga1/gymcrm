@@ -40,7 +40,7 @@ impl SettingsState {
             .get_setting("gym_name")
             .ok()
             .flatten()
-            .unwrap_or_else(|| "RocheCRM".into());
+            .unwrap_or_else(|| "TenneCRM".into());
         self.monthly_fee = format!("{}", repo.default_monthly_fee());
         self.registration_fee = format!("{}", repo.registration_fee());
         self.currency = repo.currency();

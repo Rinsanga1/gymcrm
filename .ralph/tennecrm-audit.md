@@ -1,11 +1,11 @@
-Implement the RocheCRM audit plan in `AUDIT_PLAN.md` (repo root). Read that file first each iteration — it has the full code map, build protocol, and task specs. Do ONE task per iteration in the suggested order, keep the build green (cargo check clean + cargo test passing) at the end of every iteration.
+Implement the TenneCRM audit plan in `AUDIT_PLAN.md` (repo root). Read that file first each iteration — it has the full code map, build protocol, and task specs. Do ONE task per iteration in the suggested order, keep the build green (cargo check clean + cargo test passing) at the end of every iteration.
 
 Order: T1 → T2 → T4 → T5 → T3 → T6 → T9 → T8 → T10.
 
 Build protocol (bash, Windows):
 - export PATH="/c/Users/katto/.cargo/bin:$PATH"
 - cargo check after edits; fix ALL warnings.
-- For tests/build: copy libshlwapi.a into the toolchain self-contained dir first, remove after. If roche_crm.exe is running (tasklist | grep -i roche), skip the link/build step — compile+test is enough.
+- For tests/build: copy libshlwapi.a into the toolchain self-contained dir first, remove after. If tenne_crm.exe is running (tasklist | grep -i tenne), skip the link/build step — compile+test is enough.
 
 Checklist:
 - [x] T1 — One payment surface: year ledger everywhere; Dashboard due row navigates to Members + opens that member's ledger; remove dashboard pay_dialog; delete ui::payment if unused.

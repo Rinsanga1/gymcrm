@@ -191,11 +191,11 @@ impl DashboardState {
         egui::Frame::new()
             .fill(card)
             .stroke(egui::Stroke::new(1.0, border))
-            .corner_radius(12.0)
+            .corner_radius(0.0)
             .inner_margin(egui::Margin::symmetric(24, 22))
             .show(ui, |ui| {
                 ui.set_min_width(360.0);
-                ui.label(egui::RichText::new("Welcome to RocheCRM").size(18.0).strong());
+                ui.label(egui::RichText::new("Welcome to TenneCRM").size(18.0).strong());
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
@@ -226,7 +226,7 @@ impl DashboardState {
         let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
-        let bar_color = egui::Color32::from_rgb(80, 170, 240);
+        let bar_color = egui::Color32::from_rgb(63, 141, 255);
         let axis_color = ui.visuals().weak_text_color();
 
         let pad = 8.0;
@@ -320,7 +320,7 @@ fn hero(
     let inner = egui::Frame::new()
         .fill(card)
         .stroke(egui::Stroke::new(1.0, border))
-        .corner_radius(12.0)
+        .corner_radius(0.0)
         .inner_margin(egui::Margin::symmetric(20, 18))
         .show(ui, |ui| {
             ui.set_min_width(240.0);
@@ -351,7 +351,7 @@ fn kpi(ui: &mut egui::Ui, label: &str, value: &str) {
     egui::Frame::new()
         .fill(card)
         .stroke(egui::Stroke::new(1.0, border))
-        .corner_radius(10.0)
+        .corner_radius(0.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_min_width(160.0);

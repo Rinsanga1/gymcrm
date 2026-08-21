@@ -1,17 +1,17 @@
-# RocheCRM
+# TenneCRM
 
 A simple gym CRM for Windows. Single portable `.exe`, no installer, no runtime
 prerequisites. All data lives in a SQLite database next to the executable.
 
 ## Install / run
 
-1. Download `roche_crm.exe`.
-2. Put it in a writable folder (e.g. `Documents\RocheCRM\`). Do **not** drop it
+1. Download `tenne_crm.exe`.
+2. Put it in a writable folder (e.g. `Documents\TenneCRM\`). Do **not** drop it
    in `Program Files`; that folder is read-only for normal users and the DB
    won't be writable.
-3. Double-click `roche_crm.exe`.
+3. Double-click `tenne_crm.exe`.
 
-That's it. On first launch the app creates `roche.db` next to the executable
+That's it. On first launch the app creates `tenne.db` next to the executable
 and seeds default settings (currency `Rs`, default monthly fee `1500`).
 
 ## Where is my data?
@@ -19,13 +19,13 @@ and seeds default settings (currency `Rs`, default monthly fee `1500`).
 In the same folder as the `.exe`:
 
 ```
-roche_crm.exe
-roche.db                 # main database
-roche.db-wal             # SQLite write-ahead log
-roche.db-shm             # SQLite shared-memory file
+tenne_crm.exe
+tenne.db                 # main database
+tenne.db-wal             # SQLite write-ahead log
+tenne.db-shm             # SQLite shared-memory file
 backups/
-    roche_20260625-184201.db
-    roche_20260626-101533.db
+    tenne_20260625-184201.db
+    tenne_20260626-101533.db
     ...
 ```
 
@@ -52,7 +52,7 @@ time you close the app cleanly, and you can take one on demand from
 
 ## Moving to a new machine
 
-Copy the entire folder (`roche_crm.exe`, `roche.db*`, and `backups/`). That's
+Copy the entire folder (`tenne_crm.exe`, `tenne.db*`, and `backups/`). That's
 the whole installation.
 
 ## Restoring a backup
@@ -61,7 +61,7 @@ the whole installation.
    (or anywhere else).
 2. Close the app.
 3. Open it again — the restore is applied at startup, and a safety copy of
-   the previous DB is written to `roche.db.pre-restore` in the same folder.
+   the previous DB is written to `tenne.db.pre-restore` in the same folder.
 
 ## Build from source
 
@@ -72,4 +72,4 @@ MinGW-w64 with `dlltool` available. No Visual Studio needed.
 cargo build --release
 ```
 
-The single-file binary lands at `target/release/roche_crm.exe`.
+The single-file binary lands at `target/release/tenne_crm.exe`.

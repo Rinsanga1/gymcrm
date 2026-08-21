@@ -15,7 +15,7 @@ pub fn backups_dir(db_path: &Path) -> PathBuf {
         .join("backups")
 }
 
-/// Copy the DB to `backups/roche_<YYYYMMDD-HHMMSS>.db`. Returns the new path.
+/// Copy the DB to `backups/tenne_<YYYYMMDD-HHMMSS>.db`. Returns the new path.
 /// SQLite WAL journal is flushed via the rusqlite Drop, but for an actively-
 /// open DB we rely on WAL checkpointing — callers should call this either at
 /// startup, on close, or after `PRAGMA wal_checkpoint(FULL)`.
@@ -23,7 +23,7 @@ pub fn backup_now(db_path: &Path) -> io::Result<PathBuf> {
     let dir = backups_dir(db_path);
     fs::create_dir_all(&dir)?;
     let ts = Local::now().format("%Y%m%d-%H%M%S");
-    let dest = dir.join(format!("roche_{}.db", ts));
+    let dest = dir.join(format!("tenne_{}.db", ts));
     fs::copy(db_path, &dest)?;
     prune(&dir, KEEP_LAST)?;
     Ok(dest)
@@ -36,7 +36,7 @@ fn prune(dir: &Path, keep: usize) -> io::Result<()> {
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
-                .starts_with("roche_")
+                .starts_with("tenne_")
                 && e.path()
                     .extension()
                     .map(|x| x == "db")
@@ -66,7 +66,7 @@ pub fn list_backups(db_path: &Path) -> io::Result<Vec<PathBuf>> {
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
-                .starts_with("roche_")
+                .starts_with("tenne_")
                 && e.path()
                     .extension()
                     .map(|x| x == "db")
@@ -83,7 +83,7 @@ pub fn list_backups(db_path: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 /// Replace the live DB with `source` (caller must close the DB connection first).
-/// A safety copy of the current DB is written to `roche.db.pre-restore`.
+/// A safety copy of the current DB is written to `tenne.db.pre-restore`.
 pub fn restore(db_path: &Path, source: &Path) -> io::Result<()> {
     if db_path.exists() {
         let safety = db_path.with_extension("db.pre-restore");
