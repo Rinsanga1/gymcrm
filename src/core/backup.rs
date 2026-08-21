@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use chrono::Local;
 
@@ -27,6 +28,32 @@ pub fn backup_now(db_path: &Path) -> io::Result<PathBuf> {
     fs::copy(db_path, &dest)?;
     prune(&dir, KEEP_LAST)?;
     Ok(dest)
+}
+
+/// Back up only if the newest existing backup is older than `min_gap` (or none
+/// exists yet). Used on exit so repeatedly opening and closing the app doesn't
+/// copy a possibly-large database every time; the manual "Back up now" button in
+/// Settings bypasses this and always writes one.
+pub fn backup_now_if_stale(db_path: &Path, min_gap: Duration) -> io::Result<Option<PathBuf>> {
+    if let Some(age) = newest_backup_age(db_path) {
+        if age < min_gap {
+            return Ok(None);
+        }
+    }
+    backup_now(db_path).map(Some)
+}
+
+/// Time since the most recent backup file was written, or `None` if there are no
+/// backups yet (or the clock/mtime can't be read).
+fn newest_backup_age(db_path: &Path) -> Option<Duration> {
+    let dir = backups_dir(db_path);
+    let newest = fs::read_dir(&dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with("tenne_"))
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .max()?;
+    SystemTime::now().duration_since(newest).ok()
 }
 
 /// Keep only the most recent `keep` backups (by mtime); delete older ones.

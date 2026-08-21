@@ -79,6 +79,17 @@ impl MonthFilter {
         }
     }
 
+    /// The equivalent period one step back: the previous month when a month is
+    /// selected (rolling the year over at January), or the previous year when
+    /// viewing a whole year. The honest baseline for a "vs last period" trend.
+    pub fn previous(&self) -> MonthFilter {
+        match self.month {
+            Some(1) => MonthFilter { year: self.year - 1, month: Some(12) },
+            Some(m) => MonthFilter { year: self.year, month: Some(m - 1) },
+            None => MonthFilter { year: self.year - 1, month: None },
+        }
+    }
+
     /// Human label, e.g. "July 2026" or "2025".
     pub fn label(&self) -> String {
         match self.month {

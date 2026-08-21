@@ -16,17 +16,98 @@ pub enum DashNav {
 
 pub struct DashboardState {
     filter: MonthFilter,
+    /// Cached snapshot so the dashboard doesn't re-run a dozen aggregate queries
+    /// on every repaint. Recomputed only when the filter changes or the data is
+    /// invalidated on navigation — the same load-once pattern the other tabs use.
+    data: Option<DashData>,
 }
 
 impl Default for DashboardState {
     fn default() -> Self {
         Self {
             filter: MonthFilter::current(),
+            data: None,
+        }
+    }
+}
+
+/// Everything the dashboard renders for one filter selection, computed once and
+/// held until the filter changes or the data is invalidated.
+struct DashData {
+    filter: MonthFilter,
+    currency: String,
+    years: Vec<i32>,
+    membership: f64,
+    registration: f64,
+    merch: f64,
+    merch_units: i64,
+    expenses: f64,
+    total_income: f64,
+    net: f64,
+    net_trend: Option<(String, egui::Color32)>,
+    total_members: i64,
+    active_members: i64,
+    due_count: usize,
+    low: Vec<crate::core::models::Product>,
+    revenue: Vec<(String, f64)>,
+    recent: Vec<crate::core::models::Txn>,
+}
+
+impl DashData {
+    fn compute(repo: &Repository, filter: MonthFilter) -> DashData {
+        let currency = repo.currency();
+        let years =
+            crate::ui::year_options(repo.transaction_years().unwrap_or_default(), filter.year);
+        let (start, end) = filter.range();
+
+        let membership = repo.category_income("membership", &start, &end).unwrap_or(0.0);
+        let registration = repo.category_income("registration", &start, &end).unwrap_or(0.0);
+        let merch = repo.merch_income(&start, &end).unwrap_or(0.0);
+        let merch_units = repo.merch_units(&start, &end).unwrap_or(0);
+        let expenses = repo.total_expenses(&start, &end).unwrap_or(0.0);
+        let total_income = membership + registration + merch;
+        let net = total_income - expenses;
+
+        // Same figure one period back, for the headline's up/down-vs-last trend.
+        let prev = filter.previous();
+        let (pstart, pend) = prev.range();
+        let prev_income = repo.category_income("membership", &pstart, &pend).unwrap_or(0.0)
+            + repo.category_income("registration", &pstart, &pend).unwrap_or(0.0)
+            + repo.merch_income(&pstart, &pend).unwrap_or(0.0);
+        let prev_net = prev_income - repo.total_expenses(&pstart, &pend).unwrap_or(0.0);
+
+        DashData {
+            filter,
+            years,
+            membership,
+            registration,
+            merch,
+            merch_units,
+            expenses,
+            total_income,
+            net,
+            net_trend: net_trend(net, prev_net, &prev),
+            total_members: repo.count_members(false).unwrap_or(0),
+            active_members: repo.count_members(true).unwrap_or(0),
+            due_count: repo
+                .due_members_with_arrears(&dates::current_month())
+                .map(|d| d.len())
+                .unwrap_or(0),
+            low: repo.low_stock_products(5).unwrap_or_default(),
+            revenue: repo.monthly_revenue(12).unwrap_or_default(),
+            recent: repo.recent_transactions(10).unwrap_or_default(),
+            currency,
         }
     }
 }
 
 impl DashboardState {
+    /// Drop the cached snapshot so the next frame recomputes. Called on
+    /// navigation, after data may have changed in another tab.
+    pub fn invalidate(&mut self) {
+        self.data = None;
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, repo: &mut Repository) -> Option<DashNav> {
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
@@ -40,35 +121,29 @@ impl DashboardState {
         ui.heading("Dashboard");
         ui.add_space(6.0);
 
+        // Recompute the snapshot only when stale: first open, filter changed, or
+        // invalidated after data changed elsewhere. A filter change made by the
+        // widget below is picked up on the next frame.
+        if self.data.as_ref().map(|d| d.filter) != Some(self.filter) {
+            self.data = Some(DashData::compute(repo, self.filter));
+        }
+        let d = self.data.as_ref().unwrap();
+        let currency = &d.currency;
+
         // Brand-new install: a wall of zeros helps no one. Point them at the
         // first real step instead.
-        let total_members = repo.count_members(false).unwrap_or(0);
-        if total_members == 0 {
+        if d.total_members == 0 {
             return self.onboarding(ui);
         }
 
-        let years =
-            crate::ui::year_options(repo.transaction_years().unwrap_or_default(), self.filter.year);
-        crate::ui::year_month_filter(ui, "dash_filter", &mut self.filter, &years);
+        crate::ui::year_month_filter(ui, "dash_filter", &mut self.filter, &d.years);
         ui.separator();
 
-        let (start, end) = self.filter.range();
-        let currency = repo.currency();
-
-        let membership = repo.category_income("membership", &start, &end).unwrap_or(0.0);
-        let registration = repo.category_income("registration", &start, &end).unwrap_or(0.0);
-        let merch = repo.merch_income(&start, &end).unwrap_or(0.0);
-        let merch_units = repo.merch_units(&start, &end).unwrap_or(0);
-        let expenses = repo.total_expenses(&start, &end).unwrap_or(0.0);
-        let total_income = membership + registration + merch;
-        let net = total_income - expenses;
-
-        let active_members = repo.count_members(true).unwrap_or(0);
-        // Due = owes any month since joining, most-behind first.
-        let due_count = repo
-            .due_members_with_arrears(&dates::current_month())
-            .map(|d| d.len())
-            .unwrap_or(0);
+        let (membership, registration, merch, merch_units, expenses, total_income, net) = (
+            d.membership, d.registration, d.merch, d.merch_units, d.expenses, d.total_income, d.net,
+        );
+        let (total_members, active_members, due_count) =
+            (d.total_members, d.active_members, d.due_count);
 
         // The two numbers a gym owner opens the app to see.
         ui.add_space(8.0);
@@ -76,8 +151,8 @@ impl DashboardState {
         let due_color = if due_count > 0 { theme::WARNING } else { theme::POSITIVE };
         let net_sub = format!(
             "{} in \u{00b7} {} out",
-            money(&currency, total_income),
-            money(&currency, expenses)
+            money(currency, total_income),
+            money(currency, expenses)
         );
         let due_sub = if due_count > 0 {
             format!("of {} active", active_members)
@@ -85,9 +160,11 @@ impl DashboardState {
             "All paid up".to_string()
         };
         ui.horizontal_wrapped(|ui| {
-            hero(ui, "Net earnings", &money(&currency, net), &net_sub, net_color, false);
+            hero(ui, "Net earnings", &money(currency, net), &net_sub, net_color, false, d.net_trend.clone());
             ui.add_space(10.0);
-            if hero(ui, "Members due", &due_count.to_string(), &due_sub, due_color, true).clicked() {
+            if hero(ui, "Members due", &due_count.to_string(), &due_sub, due_color, true, None)
+                .clicked()
+            {
                 nav = Some(DashNav::MembersDue);
             }
         });
@@ -96,10 +173,10 @@ impl DashboardState {
         // The headline is the two heroes above; the per-category figures are a
         // breakdown you open when you want it, not seven numbers shouting at once.
         let kpis = [
-            ("Membership", money(&currency, membership)),
-            ("Joining fees", money(&currency, registration)),
-            ("Shop", format!("{} ({} units)", money(&currency, merch), merch_units)),
-            ("Expenses", money(&currency, expenses)),
+            ("Membership", money(currency, membership)),
+            ("Joining fees", money(currency, registration)),
+            ("Shop", format!("{} ({} units)", money(currency, merch), merch_units)),
+            ("Expenses", money(currency, expenses)),
             ("Total members", total_members.to_string()),
             ("Active members", active_members.to_string()),
         ];
@@ -119,7 +196,7 @@ impl DashboardState {
             });
 
         ui.add_space(12.0);
-        let low = repo.low_stock_products(5).unwrap_or_default();
+        let low = &d.low;
         if !low.is_empty() {
             let text = format!(
                 "Low stock: {}",
@@ -142,11 +219,11 @@ impl DashboardState {
 
         ui.add_space(12.0);
         section(ui, "Monthly revenue");
-        self.revenue_chart(ui, repo);
+        revenue_chart(ui, currency, &d.revenue);
 
         ui.add_space(12.0);
         section(ui, "Recent activity");
-        let recent = repo.list_transactions(None, None).unwrap_or_default();
+        let recent = &d.recent;
         if recent.is_empty() {
             ui.weak("No transactions yet.");
         } else {
@@ -155,7 +232,7 @@ impl DashboardState {
                 .spacing([16.0, 6.0])
                 .striped(true)
                 .show(ui, |ui| {
-                    for t in recent.iter().take(10) {
+                    for t in recent.iter() {
                         ui.label(egui::RichText::new(&t.date).weak());
                         ui.label(&t.label);
                         let income = t.amount >= 0.0;
@@ -166,7 +243,7 @@ impl DashboardState {
                             |ui| {
                                 ui.colored_label(
                                     color,
-                                    format!("{sign}{}", money(&currency, t.amount.abs())),
+                                    format!("{sign}{}", money(currency, t.amount.abs())),
                                 );
                             },
                         );
@@ -195,7 +272,7 @@ impl DashboardState {
             .inner_margin(egui::Margin::symmetric(24, 22))
             .show(ui, |ui| {
                 ui.set_min_width(360.0);
-                ui.label(egui::RichText::new("Welcome to TenneCRM").size(18.0).strong());
+                ui.label(egui::RichText::new("Welcome to TenneCRM").heading());
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
@@ -211,14 +288,16 @@ impl DashboardState {
         nav
     }
 
-    fn revenue_chart(&self, ui: &mut egui::Ui, repo: &Repository) {
-        let data = repo.monthly_revenue(12).unwrap_or_default();
+}
+
+/// The last-12-months revenue bars. Reads its data from the dashboard cache
+/// rather than querying, so it costs nothing to redraw on hover/scroll.
+fn revenue_chart(ui: &mut egui::Ui, currency: &str, data: &[(String, f64)]) {
         let values: Vec<f64> = data.iter().map(|(_, v)| *v).collect();
         if values.iter().sum::<f64>() <= 0.0 {
             ui.weak("No revenue yet.");
             return;
         }
-        let currency = repo.currency();
         let max = values.iter().cloned().fold(0.0f64, f64::max).max(1.0);
         let n = values.len();
 
@@ -260,7 +339,7 @@ impl DashboardState {
                 egui::pos2(cx, plot.bottom() + 3.0),
                 egui::Align2::CENTER_TOP,
                 MON[m - 1],
-                egui::FontId::proportional(10.0),
+                egui::FontId::proportional(12.0),
                 axis_color,
             );
         }
@@ -268,14 +347,14 @@ impl DashboardState {
         if let Some(i) = hovered {
             resp.on_hover_ui(|ui| {
                 ui.strong(dates::pretty_month(&data[i].0));
-                ui.label(money(&currency, values[i]));
+                ui.label(money(currency, values[i]));
             });
         }
 
         let this = *values.last().unwrap();
         let prev = if n >= 2 { values[n - 2] } else { 0.0 };
         ui.horizontal(|ui| {
-            ui.weak(format!("This month: {}", money(&currency, this)));
+            ui.weak(format!("This month: {}", money(currency, this)));
             if prev > 0.0 {
                 ui.add_space(12.0);
                 let up = this >= prev;
@@ -285,7 +364,6 @@ impl DashboardState {
                 ui.colored_label(color, format!("{sign}{:.0}% vs last month", pct));
             }
         });
-    }
 }
 
 const MON: [&str; 12] = [
@@ -297,11 +375,26 @@ fn section(ui: &mut egui::Ui, text: &str) {
     let muted = theme::text_muted(ui.visuals());
     ui.label(
         egui::RichText::new(text.to_uppercase())
-            .size(12.0)
+            .text_style(egui::TextStyle::Small)
             .strong()
             .color(muted),
     );
     ui.add_space(4.0);
+}
+
+/// Period-over-period change for the headline number: `+12% vs June 2026`,
+/// colored by direction. `None` when there's no baseline to compare against
+/// (the previous period earned nothing), so we never divide by zero or show a
+/// meaningless percentage. `baseline` supplies the human label for the period.
+fn net_trend(net: f64, prev: f64, baseline: &MonthFilter) -> Option<(String, egui::Color32)> {
+    if prev.abs() < f64::EPSILON {
+        return None;
+    }
+    let pct = (net - prev) / prev.abs() * 100.0;
+    let up = net >= prev;
+    let sign = if up { "+" } else { "" };
+    let color = if up { theme::POSITIVE } else { theme::NEGATIVE };
+    Some((format!("{sign}{pct:.0}% vs {}", baseline.label()), color))
 }
 
 /// A large emphasis card for the one or two numbers that matter most. Returns
@@ -313,6 +406,7 @@ fn hero(
     sub: &str,
     accent: egui::Color32,
     clickable: bool,
+    trend: Option<(String, egui::Color32)>,
 ) -> egui::Response {
     let card = theme::card_fill(ui.visuals());
     let border = theme::border(ui.visuals());
@@ -325,12 +419,24 @@ fn hero(
         .show(ui, |ui| {
             ui.set_min_width(240.0);
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(label.to_uppercase()).size(12.0).color(muted));
+                ui.label(
+                    egui::RichText::new(label.to_uppercase())
+                        .text_style(egui::TextStyle::Small)
+                        .color(muted),
+                );
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(value).size(34.0).strong().color(accent));
                 if !sub.is_empty() {
                     ui.add_space(2.0);
-                    ui.label(egui::RichText::new(sub).size(12.0).color(muted));
+                    ui.label(
+                        egui::RichText::new(sub)
+                            .text_style(egui::TextStyle::Small)
+                            .color(muted),
+                    );
+                }
+                if let Some((text, color)) = trend {
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(text).text_style(egui::TextStyle::Small).color(color));
                 }
             });
         });
@@ -358,7 +464,7 @@ fn kpi(ui: &mut egui::Ui, label: &str, value: &str) {
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(label.to_uppercase())
-                        .size(11.0)
+                        .text_style(egui::TextStyle::Small)
                         .color(muted),
                 );
                 ui.add_space(4.0);

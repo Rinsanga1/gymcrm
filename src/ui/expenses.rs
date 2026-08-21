@@ -92,6 +92,8 @@ enum Dialog {
 pub struct ExpensesState {
     rows: Vec<Expense>,
     recurring: Vec<RecurringExpense>,
+    filter: crate::core::dates::MonthFilter,
+    years: Vec<i32>,
     tab: Tab,
     dirty: bool,
     dialog: Dialog,
@@ -104,6 +106,8 @@ impl Default for ExpensesState {
         Self {
             rows: Vec::new(),
             recurring: Vec::new(),
+            filter: crate::core::dates::MonthFilter::current(),
+            years: Vec::new(),
             tab: Tab::Expenses,
             dirty: true,
             dialog: Dialog::None,
@@ -135,7 +139,10 @@ impl ExpensesState {
     }
 
     fn reload(&mut self, repo: &Repository) {
-        self.rows = repo.list_expenses().unwrap_or_default();
+        self.years =
+            crate::ui::year_options(repo.expense_years().unwrap_or_default(), self.filter.year);
+        let (start, end) = self.filter.range();
+        self.rows = repo.list_expenses_between(&start, &end).unwrap_or_default();
         self.recurring = repo.list_recurring_expenses().unwrap_or_default();
         self.dirty = false;
     }
@@ -145,7 +152,11 @@ impl ExpensesState {
             self.reload(repo);
         }
         if let Some(id) = self.pending_edit.take() {
-            self.handle_action(Action::Edit(id));
+            // Loaded straight from the DB, not the filtered rows, so an expense
+            // tapped in Transactions opens even when it's outside this month.
+            if let Ok(Some(e)) = repo.get_expense(id) {
+                self.dialog = Dialog::Edit(ExpenseForm::from(&e));
+            }
         }
 
         let currency = repo.currency();
@@ -182,7 +193,14 @@ impl ExpensesState {
         ui.add_space(6.0);
 
         match self.tab {
-            Tab::Expenses => action = self.expenses_table(ui, &currency).or(action),
+            Tab::Expenses => {
+                if crate::ui::year_month_filter(ui, "expenses_filter", &mut self.filter, &self.years)
+                {
+                    self.dirty = true;
+                }
+                ui.add_space(6.0);
+                action = self.expenses_table(ui, &currency).or(action);
+            }
             Tab::Recurring => action = self.recurring_table(ui, &currency).or(action),
         }
 
@@ -198,7 +216,9 @@ impl ExpensesState {
             let mut action = None;
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("No expenses yet.").weak());
+                ui.label(
+                    egui::RichText::new(format!("No expenses in {}.", self.filter.label())).weak(),
+                );
                 ui.add_space(6.0);
                 if ui.button("+ New expense").clicked() {
                     action = Some(Action::NewExpense);
@@ -208,9 +228,11 @@ impl ExpensesState {
         }
         let mut action: Option<Action> = None;
         crate::ui::wide_table(ui, 720.0, |ui| {
+            let table_height = ui.available_height().max(34.0 * 5.0);
             TableBuilder::new(ui)
                 .striped(false)
                 .resizable(false)
+                .max_scroll_height(table_height)
                 .column(Column::auto().at_least(120.0))
                 .column(Column::auto().at_least(160.0))
                 .column(Column::auto().at_least(100.0))
@@ -285,9 +307,11 @@ impl ExpensesState {
         }
         let mut action: Option<Action> = None;
         crate::ui::wide_table(ui, 620.0, |ui| {
+            let table_height = ui.available_height().max(34.0 * 5.0);
             TableBuilder::new(ui)
                 .striped(false)
                 .resizable(false)
+                .max_scroll_height(table_height)
                 .column(Column::auto().at_least(220.0))
                 .column(Column::auto().at_least(120.0))
                 .column(Column::remainder().at_least(220.0))
@@ -371,6 +395,9 @@ impl ExpensesState {
             Dialog::Edit(form) => {
                 egui::Window::new(if form.editing { "Edit expense" } else { "Add expense" })
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .show(ctx, |ui| {
                         if !form.editing && !recurring.is_empty() {
@@ -466,6 +493,9 @@ impl ExpensesState {
             Dialog::ConfirmDelete { id } => {
                 egui::Window::new("Delete expense")
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .show(ctx, |ui| {
                         ui.label("Delete this expense? This cannot be undone.");
@@ -489,6 +519,9 @@ impl ExpensesState {
                     "Add recurring"
                 })
                 .collapsible(false)
+                .vscroll(true)
+                .max_height(crate::ui::modal_max_h(ctx))
+                .max_width(crate::ui::modal_max_w(ctx))
                 .resizable(false)
                 .show(ctx, |ui| {
                     egui::Grid::new("recurring_form").num_columns(2).show(ui, |ui| {
@@ -533,6 +566,9 @@ impl ExpensesState {
             Dialog::ConfirmDeleteRecurring { id } => {
                 egui::Window::new("Delete recurring")
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .show(ctx, |ui| {
                         ui.label(

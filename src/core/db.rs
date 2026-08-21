@@ -72,6 +72,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             total REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date);
+        CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(date);
 
         CREATE TABLE IF NOT EXISTS sale_items (
             id         INTEGER PRIMARY KEY,
@@ -80,6 +81,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             qty        INTEGER NOT NULL,
             unit_price REAL NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
 
         CREATE TABLE IF NOT EXISTS expenses (
             id     INTEGER PRIMARY KEY,
@@ -88,6 +90,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             date   TEXT NOT NULL,
             note   TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
 
         CREATE TABLE IF NOT EXISTS recurring_expenses (
             id     INTEGER PRIMARY KEY,

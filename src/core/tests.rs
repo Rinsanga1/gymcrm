@@ -362,3 +362,45 @@ fn months_between_is_inclusive_oldest_first() {
     assert!(months_between("2026-08", "2026-06").is_empty()); // end before start
     assert!(months_between("bad", "2026-08").is_empty());
 }
+
+#[test]
+fn month_filter_previous_steps_back_a_period() {
+    use crate::core::dates::MonthFilter;
+    // Mid-year: just the previous month, same year.
+    assert_eq!(
+        MonthFilter { year: 2026, month: Some(7) }.previous(),
+        MonthFilter { year: 2026, month: Some(6) }
+    );
+    // January rolls back to December of the prior year.
+    assert_eq!(
+        MonthFilter { year: 2026, month: Some(1) }.previous(),
+        MonthFilter { year: 2025, month: Some(12) }
+    );
+    // Whole-year view steps back to the whole previous year.
+    assert_eq!(
+        MonthFilter { year: 2026, month: None }.previous(),
+        MonthFilter { year: 2025, month: None }
+    );
+}
+
+#[test]
+fn list_expenses_between_filters_by_month() {
+    use crate::core::models::Expense;
+    let repo = repo();
+    let mk = |name: &str, date: &str| Expense {
+        id: 0,
+        name: name.into(),
+        amount: 100.0,
+        date: date.into(),
+        note: None,
+    };
+    repo.insert_expense(&mk("July", "2026-07-15")).unwrap();
+    repo.insert_expense(&mk("Aug early", "2026-08-01")).unwrap();
+    repo.insert_expense(&mk("Aug late", "2026-08-31")).unwrap();
+    repo.insert_expense(&mk("Sep", "2026-09-02")).unwrap();
+
+    let aug = repo.list_expenses_between("2026-08-01", "2026-08-31").unwrap();
+    let names: Vec<&str> = aug.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, vec!["Aug late", "Aug early"]); // newest first, month-bounded
+    assert_eq!(repo.expense_years().unwrap(), vec![2026]);
+}

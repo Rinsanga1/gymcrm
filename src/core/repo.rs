@@ -520,6 +520,71 @@ impl Repository {
         Ok(out.into_iter().map(|(_, t)| t).collect())
     }
 
+    /// The `limit` most recent transactions across payments, sales and expenses,
+    /// newest first. Unlike `list_transactions`, the union, ordering and limit
+    /// all happen in SQL, so only `limit` rows are ever materialised — the cost
+    /// is flat regardless of how much history the gym has. Used by the Dashboard,
+    /// which only shows a short recent-activity list.
+    pub fn recent_transactions(&self, limit: usize) -> rusqlite::Result<Vec<Txn>> {
+        let sql = "
+            SELECT kind, id, date, amount, label, detail FROM (
+                SELECT 'payment' AS kind, p.id AS id, p.date AS date, p.amount AS amount,
+                       p.category AS label, m.name AS detail,
+                       COALESCE(p.created_at, p.date) AS ord
+                FROM payments p LEFT JOIN members m ON m.id = p.member_id
+                WHERE p.amount <> 0
+                UNION ALL
+                SELECT 'sale', s.id, s.date, s.total, 'Merchandise sale', NULL,
+                       COALESCE(s.created_at, s.date)
+                FROM sales s
+                UNION ALL
+                SELECT 'expense', e.id, e.date, -e.amount, e.name, e.note,
+                       COALESCE(e.created_at, e.date)
+                FROM expenses e
+            )
+            ORDER BY date DESC, ord DESC, id DESC
+            LIMIT ?1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, f64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (kind, id, date, amount, label, detail) = row?;
+            let txn = match kind.as_str() {
+                "payment" => {
+                    let cat = crate::core::models::category_label(&label);
+                    let label = match &detail {
+                        Some(n) => format!("{cat} \u{00b7} {n}"),
+                        None => cat.to_string(),
+                    };
+                    Txn { kind: TxnKind::Payment, id, date, amount, label, detail: None }
+                }
+                "sale" => Txn {
+                    kind: TxnKind::Sale,
+                    id,
+                    date,
+                    amount,
+                    label: "Merchandise sale".to_string(),
+                    detail: None,
+                },
+                _ => {
+                    let label = if label.trim().is_empty() { "Expense".to_string() } else { label };
+                    Txn { kind: TxnKind::Expense, id, date, amount, label, detail }
+                }
+            };
+            out.push(txn);
+        }
+        Ok(out)
+    }
+
     pub fn payments_for_member(&self, member_id: i64) -> rusqlite::Result<Vec<Payment>> {
         let mut stmt = self
             .conn
@@ -585,26 +650,29 @@ impl Repository {
         &self,
         current_month: &str,
     ) -> rusqlite::Result<std::collections::HashMap<i64, (i64, f64)>> {
-        let mut paid: std::collections::HashMap<i64, Vec<String>> =
-            std::collections::HashMap::new();
+        // Count each member's paid membership-months (from their own join month)
+        // in SQL: a grouped DISTINCT that rides the payments indexes, instead of
+        // pulling every payment row into Rust to count by hand every frame.
+        let mut paid: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT member_id, period_month FROM payments
-             WHERE category != 'registration' AND period_month <= ?1",
+            "SELECT p.member_id, COUNT(DISTINCT p.period_month)
+             FROM payments p JOIN members m ON m.id = p.member_id
+             WHERE m.active = 1 AND p.category != 'registration'
+               AND p.period_month <= ?1
+               AND p.period_month >= substr(m.join_date, 1, 7)
+             GROUP BY p.member_id",
         )?;
         for row in stmt.query_map([current_month], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
         })? {
-            let (id, m) = row?;
-            paid.entry(id).or_default().push(m);
+            let (id, c) = row?;
+            paid.insert(id, c);
         }
         let fee = self.default_monthly_fee();
         let mut out = std::collections::HashMap::new();
         for m in self.list_members(true)? {
             let join_month = &m.join_date[..7];
-            let paid_count = paid
-                .get(&m.id)
-                .map(|ms| ms.iter().filter(|pm| pm.as_str() >= join_month).count() as i64)
-                .unwrap_or(0);
+            let paid_count = *paid.get(&m.id).unwrap_or(&0);
             let expected = super::dates::month_diff(join_month, current_month).max(0) + 1;
             let behind = (expected - paid_count).max(0);
             if behind > 0 {
@@ -911,9 +979,15 @@ impl Repository {
     /// days between payment spikes.
     pub fn monthly_revenue(&self, months: u32) -> rusqlite::Result<Vec<(String, f64)>> {
         let mut sums: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        // Only scan the window the chart shows, not the whole history. `from` is
+        // the first day of the oldest visible month, so the indexed date column
+        // can seek instead of scanning every row every frame.
+        let to = dates::current_month();
+        let from_ym = dates::months_ago(months.saturating_sub(1));
+        let from = format!("{}-01", &from_ym[..7]);
         let mut add = |sql: &str| -> rusqlite::Result<()> {
             let mut stmt = self.conn.prepare(sql)?;
-            for row in stmt.query_map([], |r| {
+            for row in stmt.query_map([&from], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
             })? {
                 let (ym, v) = row?;
@@ -921,11 +995,8 @@ impl Repository {
             }
             Ok(())
         };
-        add("SELECT substr(date,1,7) AS ym, SUM(amount) FROM payments GROUP BY ym")?;
-        add("SELECT substr(date,1,7) AS ym, SUM(total) FROM sales GROUP BY ym")?;
-
-        let to = dates::current_month();
-        let from = dates::months_ago(months.saturating_sub(1));
+        add("SELECT substr(date,1,7) AS ym, SUM(amount) FROM payments WHERE date >= ?1 GROUP BY ym")?;
+        add("SELECT substr(date,1,7) AS ym, SUM(total) FROM sales WHERE date >= ?1 GROUP BY ym")?;
         Ok(dates::months_between(&from[..7], &to)
             .into_iter()
             .map(|m| {
@@ -984,6 +1055,27 @@ impl Repository {
             .conn
             .prepare("SELECT * FROM expenses ORDER BY date DESC, id DESC")?;
         let rows = stmt.query_map([], expense_from_row)?;
+        rows.collect()
+    }
+
+    /// Expenses with `date` in `[start, end]`, newest first. Lets the Expenses
+    /// tab load one month at a time (via the indexed date column) instead of the
+    /// whole ledger.
+    pub fn list_expenses_between(&self, start: &str, end: &str) -> rusqlite::Result<Vec<Expense>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM expenses WHERE date >= ?1 AND date <= ?2 ORDER BY date DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(params![start, end], expense_from_row)?;
+        rows.collect()
+    }
+
+    /// Distinct calendar years that have any expense, newest first. Powers the
+    /// year dropdown in the Expenses filter.
+    pub fn expense_years(&self) -> rusqlite::Result<Vec<i32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT CAST(substr(date, 1, 4) AS INTEGER) y FROM expenses ORDER BY y DESC",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect()
     }
 

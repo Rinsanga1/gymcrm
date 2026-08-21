@@ -3,7 +3,6 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::core::models::Member;
 use crate::core::{backup, dates, db, Repository};
 
 pub struct SettingsState {
@@ -122,45 +121,24 @@ impl SettingsState {
         ui.add_space(20.0);
         ui.heading("Data");
         ui.separator();
-        ui.label(egui::RichText::new("Import members").strong());
-        ui.weak("Bring in members from a spreadsheet. The first row must be column names (Name, Phone).");
+        ui.label(egui::RichText::new("Import & export").strong());
+        ui.weak("One spreadsheet holds everything — members, payments, sales, and expenses. Export it to back up or share; import it to bring data in. The first row is the column names, and a 'Type' column marks each row (Member, Payment, Sale, or Expense).");
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Import members…").clicked() {
+            if ui.button("Export all data…").clicked() {
+                self.export_summary =
+                    Some(pick_and_export("tennecrm-data.csv", |p| export_all(repo, p)));
+            }
+            if ui.button("Import data…").clicked() {
                 if let Some(path) = pick_csv() {
-                    self.import_summary = Some(import_members_csv(repo, &path));
+                    self.import_summary = Some(import_all_csv(repo, &path));
                 }
             }
         });
-        if let Some(s) = &self.import_summary {
+        if let Some(s) = &self.export_summary {
             ui.add_space(4.0);
             ui.label(s);
         }
-
-        ui.add_space(16.0);
-        ui.label(egui::RichText::new("Export CSV").strong());
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Export members").clicked() {
-                self.export_summary = Some(pick_and_export("members.csv", |p| {
-                    export_members(repo, p)
-                }));
-            }
-            if ui.button("Export payments").clicked() {
-                self.export_summary = Some(pick_and_export("payments.csv", |p| {
-                    export_payments(repo, p)
-                }));
-            }
-            if ui.button("Export sales").clicked() {
-                self.export_summary = Some(pick_and_export("sales.csv", |p| {
-                    export_sales(repo, p)
-                }));
-            }
-            if ui.button("Export expenses").clicked() {
-                self.export_summary = Some(pick_and_export("expenses.csv", |p| {
-                    export_expenses(repo, p)
-                }));
-            }
-        });
-        if let Some(s) = &self.export_summary {
+        if let Some(s) = &self.import_summary {
             ui.add_space(4.0);
             ui.label(s);
         }
@@ -244,96 +222,65 @@ fn write_csv(path: &PathBuf, headers: &[&str], rows: impl IntoIterator<Item = Ve
     Ok(n)
 }
 
-fn export_members(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> {
-    let rows = repo.list_members(false).map_err(io_err)?;
-    write_csv(
-        path,
-        &["id", "name", "phone", "join_date", "active", "notes"],
-        rows.into_iter().map(|m| {
-            vec![
-                m.id.to_string(),
-                m.name,
-                m.phone.unwrap_or_default(),
-                m.join_date,
-                if m.active { "1".into() } else { "0".into() },
-                m.notes.unwrap_or_default(),
-            ]
-        }),
-    )
-}
-
-fn export_payments(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> {
+/// Every record in the app as one flat CSV, one row per record, tagged by a
+/// leading `Type` column. Shared columns cover all four kinds; a blank cell just
+/// means "not applicable to this type" (e.g. a payment has no phone). Sales are
+/// exported per-sale at their total — per-product line detail lives in the Shop
+/// tab and is not round-tripped here.
+fn export_all(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> {
     let members = repo.list_members(false).map_err(io_err)?;
-    let mut all: Vec<Vec<String>> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for m in &members {
+        rows.push(vec![
+            "Member".into(),
+            m.join_date.clone(),
+            m.name.clone(),
+            m.phone.clone().unwrap_or_default(),
+            if m.active { "active".into() } else { "inactive".into() },
+            String::new(),
+            m.notes.clone().unwrap_or_default(),
+        ]);
+    }
     for m in &members {
         for p in repo.payments_for_member(m.id).map_err(io_err)? {
-            all.push(vec![
-                p.id.to_string(),
-                m.id.to_string(),
-                m.name.clone(),
-                p.period_month,
-                format!("{}", p.amount),
+            rows.push(vec![
+                "Payment".into(),
                 p.date,
+                m.name.clone(),
+                String::new(),
                 p.category,
+                format!("{}", p.amount),
                 p.note.unwrap_or_default(),
             ]);
         }
     }
-    write_csv(
-        path,
-        &["id", "member_id", "member_name", "period_month", "amount", "date", "category", "note"],
-        all,
-    )
-}
-
-fn export_sales(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> {
-    let sales = repo.list_sales().map_err(io_err)?;
-    let mut all: Vec<Vec<String>> = Vec::new();
-    for s in &sales {
-        let items = repo.sale_items(s.id).map_err(io_err)?;
-        if items.is_empty() {
-            all.push(vec![
-                s.id.to_string(),
-                s.date.clone(),
-                format!("{}", s.total),
-                String::new(),
-                String::new(),
-                String::new(),
-            ]);
-        } else {
-            for it in items {
-                all.push(vec![
-                    s.id.to_string(),
-                    s.date.clone(),
-                    format!("{}", s.total),
-                    it.product_id.map(|i| i.to_string()).unwrap_or_default(),
-                    it.qty.to_string(),
-                    format!("{}", it.unit_price),
-                ]);
-            }
-        }
+    for s in repo.list_sales().map_err(io_err)? {
+        rows.push(vec![
+            "Sale".into(),
+            s.date,
+            String::new(),
+            String::new(),
+            "shop".into(),
+            format!("{}", s.total),
+            String::new(),
+        ]);
+    }
+    for e in repo.list_expenses().map_err(io_err)? {
+        rows.push(vec![
+            "Expense".into(),
+            e.date,
+            e.name,
+            String::new(),
+            String::new(),
+            format!("{}", e.amount),
+            e.note.unwrap_or_default(),
+        ]);
     }
     write_csv(
         path,
-        &["sale_id", "date", "sale_total", "product_id", "qty", "unit_price"],
-        all,
-    )
-}
-
-fn export_expenses(repo: &Repository, path: &PathBuf) -> std::io::Result<usize> {
-    let rows = repo.list_expenses().map_err(io_err)?;
-    write_csv(
-        path,
-        &["id", "name", "date", "amount", "note"],
-        rows.into_iter().map(|e| {
-            vec![
-                e.id.to_string(),
-                e.name,
-                e.date,
-                format!("{}", e.amount),
-                e.note.unwrap_or_default(),
-            ]
-        }),
+        &["Type", "Date", "Name", "Phone", "Category", "Amount", "Note"],
+        rows,
     )
 }
 
@@ -345,7 +292,12 @@ fn pick_csv() -> Option<PathBuf> {
     rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_file()
 }
 
-fn import_members_csv(repo: &mut Repository, path: &PathBuf) -> String {
+/// Read the unified export format back in. Members are inserted first (in a
+/// separate pass) so payments can attach to them by name no matter the row
+/// order in the file. The whole load runs in one transaction: if the file is
+/// broken partway, nothing is committed. Unknown types and unparseable rows are
+/// skipped and counted rather than aborting the import.
+fn import_all_csv(repo: &mut Repository, path: &PathBuf) -> String {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => return format!("Failed to open file: {}", e),
@@ -354,91 +306,183 @@ fn import_members_csv(repo: &mut Repository, path: &PathBuf) -> String {
         .has_headers(true)
         .flexible(true)
         .from_reader(file);
-
     let headers = match rdr.headers() {
         Ok(h) => h.clone(),
         Err(e) => return format!("Failed to read header: {}", e),
     };
-    let name_idx = headers
-        .iter()
-        .position(|h| h.trim().eq_ignore_ascii_case("name"));
-    let phone_idx = headers
-        .iter()
-        .position(|h| h.trim().eq_ignore_ascii_case("phone"));
-    let join_idx = headers
-        .iter()
-        .position(|h| h.trim().eq_ignore_ascii_case("join_date"));
-    let active_idx = headers
-        .iter()
-        .position(|h| h.trim().eq_ignore_ascii_case("active"));
-    let notes_idx = headers
-        .iter()
-        .position(|h| h.trim().eq_ignore_ascii_case("notes"));
-    let Some(name_idx) = name_idx else {
-        return "CSV needs a 'Name' column.".into();
+    let col = |name: &str| headers.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
+    let (Some(type_idx), Some(name_idx)) = (col("type"), col("name")) else {
+        return "CSV needs 'Type' and 'Name' columns. Export a file first to see the format.".into();
     };
+    let date_idx = col("date");
+    let phone_idx = col("phone");
+    let category_idx = col("category");
+    let amount_idx = col("amount");
+    let note_idx = col("note");
+
+    // Read every row up front so member rows can be processed before the payment
+    // rows that reference them, whatever order they appear in.
+    let records: Vec<csv::StringRecord> = rdr.records().flatten().collect();
+    let cell = |r: &csv::StringRecord, idx: Option<usize>| -> String {
+        idx.and_then(|i| r.get(i)).map(str::trim).unwrap_or("").to_string()
+    };
+    let opt = |s: String| if s.is_empty() { None } else { Some(s) };
+
+    // Seed a name -> id map with members that already exist, so payments in the
+    // file can attach to them even when the member isn't re-imported.
+    let existing = match repo.list_members(false) {
+        Ok(v) => v,
+        Err(e) => return format!("Failed to read members: {}", e),
+    };
+    let mut ids: std::collections::HashMap<String, i64> =
+        existing.into_iter().map(|m| (m.name.to_lowercase(), m.id)).collect();
 
     let today = dates::today();
+    let now = dates::now();
     let tx = match repo.conn.transaction() {
         Ok(t) => t,
         Err(e) => return format!("Failed to start transaction: {}", e),
     };
-    let mut imported = 0u32;
-    let mut skipped = 0u32;
-    for result in rdr.records() {
-        let record = match result {
-            Ok(r) => r,
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
-        let name = record.get(name_idx).map(str::trim).unwrap_or("");
+    let (mut members, mut payments, mut sales, mut expenses, mut skipped) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let date_or_today = |r: &csv::StringRecord| {
+        let d = cell(r, date_idx);
+        if d.is_empty() { today.clone() } else { d }
+    };
+
+    for r in &records {
+        if !cell(r, Some(type_idx)).eq_ignore_ascii_case("member") {
+            continue;
+        }
+        let name = cell(r, Some(name_idx));
         if name.is_empty() {
             skipped += 1;
             continue;
         }
-        let phone = phone_idx
-            .and_then(|i| record.get(i))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let join_date = join_idx
-            .and_then(|i| record.get(i))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| today.clone());
-        let active = active_idx
-            .and_then(|i| record.get(i))
-            .map(str::trim)
-            .map(|s| !matches!(s.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "inactive"))
-            .unwrap_or(true);
-        let notes = notes_idx
-            .and_then(|i| record.get(i))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let m = Member {
-            id: 0,
-            name: name.to_string(),
-            phone,
-            join_date,
-            active,
-            notes,
-        };
-        let r = tx.execute(
-            "INSERT INTO members(name, phone, join_date, active, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![m.name, m.phone, m.join_date, m.active as i64, m.notes],
+        let active = !cell(r, category_idx).eq_ignore_ascii_case("inactive");
+        let res = tx.execute(
+            "INSERT INTO members(name, phone, join_date, active, notes) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![name, opt(cell(r, phone_idx)), date_or_today(r), active as i64, opt(cell(r, note_idx))],
         );
-        match r {
-            Ok(_) => imported += 1,
+        match res {
+            Ok(_) => {
+                ids.insert(name.to_lowercase(), tx.last_insert_rowid());
+                members += 1;
+            }
             Err(_) => skipped += 1,
         }
     }
+
+    for r in &records {
+        let ty = cell(r, Some(type_idx));
+        if ty.eq_ignore_ascii_case("member") {
+            continue;
+        }
+        let amount = cell(r, amount_idx).parse::<f64>();
+        if ty.eq_ignore_ascii_case("payment") {
+            let (Some(&mid), Ok(amount)) = (ids.get(&cell(r, Some(name_idx)).to_lowercase()), amount) else {
+                skipped += 1;
+                continue;
+            };
+            let date = date_or_today(r);
+            let period = if date.len() >= 7 { date[..7].to_string() } else { dates::current_month() };
+            let category = { let c = cell(r, category_idx); if c.is_empty() { "membership".into() } else { c } };
+            let res = tx.execute(
+                "INSERT INTO payments(member_id, period_month, amount, date, note, category, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![mid, period, amount, date, opt(cell(r, note_idx)), category, now],
+            );
+            match res { Ok(_) => payments += 1, Err(_) => skipped += 1 }
+        } else if ty.eq_ignore_ascii_case("sale") {
+            let Ok(amount) = amount else { skipped += 1; continue; };
+            let res = tx.execute(
+                "INSERT INTO sales(date, total, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![date_or_today(r), amount, now],
+            );
+            match res { Ok(_) => sales += 1, Err(_) => skipped += 1 }
+        } else if ty.eq_ignore_ascii_case("expense") {
+            let Ok(amount) = amount else { skipped += 1; continue; };
+            let note = opt(cell(r, note_idx));
+            let name = cell(r, Some(name_idx));
+            let ename = if !name.is_empty() { name } else { note.clone().unwrap_or_else(|| "Expense".into()) };
+            let res = tx.execute(
+                "INSERT INTO expenses(name, amount, date, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![ename, amount, date_or_today(r), note, now],
+            );
+            match res { Ok(_) => expenses += 1, Err(_) => skipped += 1 }
+        } else {
+            skipped += 1;
+        }
+    }
+
     if let Err(e) = tx.commit() {
         return format!("Commit failed: {}", e);
     }
-    format!("Imported {} member(s); skipped {}.", imported, skipped)
+    format!(
+        "Imported {members} member(s), {payments} payment(s), {sales} sale(s), {expenses} expense(s); skipped {skipped}."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{export_all, import_all_csv};
+    use crate::core::db::open_memory;
+    use crate::core::models::{Expense, Member, Payment};
+    use crate::core::Repository;
+
+    fn member(name: &str) -> Member {
+        Member {
+            id: 0,
+            name: name.into(),
+            phone: Some("98765".into()),
+            join_date: "2026-01-01".into(),
+            active: true,
+            notes: Some("VIP".into()),
+        }
+    }
+
+    #[test]
+    fn unified_csv_round_trips_every_type() {
+        let mut src = Repository::new(open_memory().unwrap());
+        let mid = src.insert_member(&member("Priya Sharma")).unwrap();
+        src.insert_payment(&Payment {
+            id: 0,
+            member_id: mid,
+            period_month: "2026-08".into(),
+            amount: 1500.0,
+            date: "2026-08-15".into(),
+            note: None,
+            category: "membership".into(),
+        })
+        .unwrap();
+        src.import_sale("2026-08-16", 200.0, &[]).unwrap();
+        src.insert_expense(&Expense {
+            id: 0,
+            name: "Rent".into(),
+            amount: 12000.0,
+            date: "2026-08-10".into(),
+            note: Some("August".into()),
+        })
+        .unwrap();
+
+        let path = std::env::temp_dir().join("tenne_unified_roundtrip.csv");
+        export_all(&src, &path).unwrap();
+
+        let mut dst = Repository::new(open_memory().unwrap());
+        import_all_csv(&mut dst, &path);
+        let _ = std::fs::remove_file(&path);
+
+        let members = dst.list_members(false).unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "Priya Sharma");
+        assert_eq!(members[0].phone.as_deref(), Some("98765"));
+        let pays = dst.payments_for_member(members[0].id).unwrap();
+        assert_eq!(pays.len(), 1);
+        assert_eq!(pays[0].amount, 1500.0);
+        assert_eq!(pays[0].category, "membership");
+        assert_eq!(dst.list_sales().unwrap().len(), 1);
+        let exps = dst.list_expenses().unwrap();
+        assert_eq!(exps.len(), 1);
+        assert_eq!(exps[0].name, "Rent");
+        assert_eq!(exps[0].amount, 12000.0);
+    }
 }

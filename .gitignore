@@ -13,6 +13,11 @@ backups/
 
 # Compiled binaries copied next to the repo for manual testing
 tenne_crm.exe
+TenneCRM.exe
+
+# Build logs and packaged output
+*.log
+/dist/
 
 # Ad-hoc portable test folders
 /portable/

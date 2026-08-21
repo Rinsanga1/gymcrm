@@ -25,6 +25,18 @@ pub fn money(currency: &str, amount: f64) -> String {
     format!("{sign}{currency} {grouped}")
 }
 
+/// Max height for a modal dialog so it always fits the current window, leaving
+/// room for the title bar and margins. Past this the dialog scrolls internally,
+/// so its action buttons stay reachable on a small screen.
+pub fn modal_max_h(ctx: &egui::Context) -> f32 {
+    (ctx.content_rect().height() - 80.0).max(160.0)
+}
+
+/// Max width for a modal dialog, keeping it inside a narrow window.
+pub fn modal_max_w(ctx: &egui::Context) -> f32 {
+    (ctx.content_rect().width() - 24.0).max(240.0)
+}
+
 /// Keep a wide table usable on small screens: it fills the panel when there is
 /// room and scrolls horizontally when the columns don't fit. egui_extras tables
 /// have no horizontal scroll of their own, so without this the rightmost column

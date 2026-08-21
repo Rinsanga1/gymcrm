@@ -421,9 +421,11 @@ impl MembersState {
         } else {
         let row_height = 34.0;
         crate::ui::wide_table(ui, 820.0, |ui| {
+        let table_height = ui.available_height().max(row_height * 5.0);
         TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
+            .max_scroll_height(table_height)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::auto().at_least(160.0).clip(true)) // name
             .column(Column::auto().at_least(110.0)) // phone
@@ -550,11 +552,15 @@ impl MembersState {
                 let title = if form.editing { "Edit member" } else { "Add member" };
                 egui::Window::new(title)
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
+                    .default_width(440.0)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
-                        egui::Grid::new("member_form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                            ui.label("Full name");
+                        egui::Grid::new("member_form").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                            ui.label("Member name");
                             ui.text_edit_singleline(&mut form.name);
                             ui.end_row();
                             ui.label("Phone");
@@ -568,10 +574,10 @@ impl MembersState {
                             ui.end_row();
                             if !form.editing {
                                 ui.label("Joining fee");
-                                ui.add(egui::TextEdit::singleline(&mut form.joining_fee).desired_width(100.0));
+                                ui.text_edit_singleline(&mut form.joining_fee);
                                 ui.end_row();
-                                ui.label(format!("This month ({})", month_label(&form.month)));
-                                ui.add(egui::TextEdit::singleline(&mut form.month_fee).desired_width(100.0));
+                                ui.label(format!("{} fee", month_label(&form.month)));
+                                ui.text_edit_singleline(&mut form.month_fee);
                                 ui.end_row();
                             }
                         });
@@ -645,6 +651,9 @@ impl MembersState {
                 let total_paid: f64 = payments.iter().map(|p| p.amount).sum();
                 egui::Window::new(format!("Member — {}", m.name))
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
@@ -729,6 +738,9 @@ impl MembersState {
                 let mut new_year = ed.year;
                 egui::Window::new(format!("Payments — {}", ed.member_name))
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {

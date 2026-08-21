@@ -106,6 +106,7 @@ impl App {
                 self.view = v;
                 // Re-query the DB on every navigation so changes made in
                 // other views (e.g. CSV import in Settings) are visible.
+                self.dashboard.invalidate();
                 self.members.invalidate();
                 self.merchandise.invalidate();
                 self.expenses.invalidate();
@@ -151,10 +152,11 @@ fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 impl eframe::App for App {
     fn on_exit(&mut self) {
         // Best-effort: checkpoint WAL, then snapshot to backups/. Old backups
-        // beyond KEEP_LAST are pruned inside backup_now.
+        // beyond KEEP_LAST are pruned inside backup_now. Throttled so closing
+        // and reopening the app repeatedly doesn't recopy the whole DB each time.
         let _ = self.repo.checkpoint();
         let path = db::db_path();
-        let _ = backup::backup_now(&path);
+        let _ = backup::backup_now_if_stale(&path, std::time::Duration::from_secs(6 * 3600));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

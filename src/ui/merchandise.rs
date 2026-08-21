@@ -488,6 +488,9 @@ impl MerchandiseState {
             Dialog::Product(form) => {
                 egui::Window::new(if form.editing { "Edit product" } else { "Add product" })
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .show(ctx, |ui| {
                         egui::Grid::new("prod_form").num_columns(2).show(ui, |ui| {
@@ -548,6 +551,9 @@ impl MerchandiseState {
                 let title = if form.editing { "Edit sale" } else { "Record sale" };
                 egui::Window::new(title)
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(true)
                     .default_width(420.0)
                     .show(ctx, |ui| {
@@ -647,6 +653,9 @@ impl MerchandiseState {
             Dialog::ConfirmDeleteProduct { id, name } => {
                 egui::Window::new("Delete product")
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .show(ctx, |ui| {
                         ui.label(format!("Delete \"{}\"? This cannot be undone.", name));
@@ -666,6 +675,9 @@ impl MerchandiseState {
             Dialog::ConfirmDeleteSale { id } => {
                 egui::Window::new("Delete sale")
                     .collapsible(false)
+                    .vscroll(true)
+                    .max_height(crate::ui::modal_max_h(ctx))
+                    .max_width(crate::ui::modal_max_w(ctx))
                     .resizable(false)
                     .show(ctx, |ui| {
                         ui.label("Delete this sale? Stock will be restored.");
